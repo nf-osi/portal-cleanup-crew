@@ -1,0 +1,325 @@
+{% extends "base.html" %}
+
+{% block title %}Synapse Metadata Corrector - Analysis{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-white">
+        <h4 class="card-title mb-0">Metadata Analysis</h4>
+    </div>
+    <div class="card-body">
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header bg-light">
+                        <h5 class="card-title mb-0">Summary Statistics</h5>
+                    </div>
+                    <div class="card-body">
+                        <p>CSV Size: <span class="fw-bold" id="csv-size">0</span> rows</p>
+                        <p>Total columns: <span class="fw-bold" id="total-columns">0</span></p>
+                        <p>Columns with issues: <span class="fw-bold" id="issue-columns">0</span></p>
+                        <p>Total invalid values: <span class="fw-bold" id="invalid-values">0</span></p>
+                        <p>Percentage of data with issues: <span class="fw-bold" id="issue-percentage">0%</span></p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header bg-light">
+                        <h5 class="card-title mb-0">Issue Distribution</h5>
+                    </div>
+                    <div class="card-body">
+                        <canvas id="issue-chart" width="400" height="300"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header bg-light">
+                <h5 class="card-title mb-0">Issues by Column</h5>
+            </div>
+            <div class="card-body">
+                <div id="column-charts-container" class="row">
+                    <!-- Column charts will be inserted here -->
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header bg-light">
+                <h5 class="card-title mb-0">Most Common Invalid Values</h5>
+            </div>
+            <div class="card-body">
+                <div id="common-issues-container">
+                    <!-- Common issues tables will be inserted here -->
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-4">
+            <button id="proceed-btn" class="btn btn-primary">Proceed to Corrections</button>
+            <button id="back-btn" class="btn btn-secondary ms-2">Back to Upload</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Get corrections data from session storage
+    const corrections = JSON.parse(sessionStorage.getItem('corrections') || '[]');
+    const csvRows = parseInt(sessionStorage.getItem('csv_rows') || '0');
+    const csvColumns = sessionStorage.getItem('debug_csv_columns') || '';
+    
+    // Calculate summary statistics
+    const totalColumns = csvColumns.split(',').length;
+    
+    // Count unique columns with issues
+    const columnsWithIssues = new Set();
+    corrections.forEach(correction => {
+        columnsWithIssues.add(correction.column_name);
+    });
+    
+    const issuePercentage = csvRows > 0 ? ((corrections.length / csvRows) * 100).toFixed(2) : 0;
+    
+    // Update summary statistics
+    document.getElementById('csv-size').textContent = csvRows.toLocaleString();
+    document.getElementById('total-columns').textContent = totalColumns;
+    document.getElementById('issue-columns').textContent = columnsWithIssues.size;
+    document.getElementById('invalid-values').textContent = corrections.length;
+    document.getElementById('issue-percentage').textContent = issuePercentage + '%';
+    
+    // Group corrections by column
+    const correctionsByColumn = {};
+    corrections.forEach(correction => {
+        const column = correction.column_name;
+        if (!correctionsByColumn[column]) {
+            correctionsByColumn[column] = [];
+        }
+        correctionsByColumn[column].push(correction);
+    });
+    
+    // Create issue distribution chart
+    const columnCounts = [];
+    const columnNames = [];
+    
+    for (const column in correctionsByColumn) {
+        columnCounts.push(correctionsByColumn[column].length);
+        columnNames.push(column);
+    }
+    
+    const issueChartCtx = document.getElementById('issue-chart').getContext('2d');
+    const issueChart = new Chart(issueChartCtx, {
+        type: 'pie',
+        data: {
+            labels: columnNames,
+            datasets: [{
+                data: columnCounts,
+                backgroundColor: [
+                    '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF',
+                    '#FF9F40', '#8AC249', '#EA80FC', '#FF5252', '#B2FF59'
+                ]
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'right'
+                }
+            }
+        }
+    });
+    
+    // Create column charts
+    const columnChartsContainer = document.getElementById('column-charts-container');
+    
+    // Sort columns by number of issues (descending)
+    const sortedColumns = Object.keys(correctionsByColumn).sort((a, b) => {
+        return correctionsByColumn[b].length - correctionsByColumn[a].length;
+    });
+    
+    sortedColumns.forEach(column => {
+        const columnCorrections = correctionsByColumn[column];
+        
+        // Create column container
+        const columnContainer = document.createElement('div');
+        columnContainer.className = 'col-md-6 mb-4';
+        
+        // Count occurrences of each invalid value
+        const invalidValueCounts = {};
+        columnCorrections.forEach(correction => {
+            const originalValue = typeof correction.original_value === 'string' ? 
+                correction.original_value : JSON.stringify(correction.original_value);
+            
+            if (!invalidValueCounts[originalValue]) {
+                invalidValueCounts[originalValue] = 0;
+            }
+            invalidValueCounts[originalValue]++;
+        });
+        
+        // Get top 5 most common invalid values
+        const topInvalidValues = Object.keys(invalidValueCounts)
+            .sort((a, b) => invalidValueCounts[b] - invalidValueCounts[a])
+            .slice(0, 5);
+        
+        const topInvalidValueCounts = topInvalidValues.map(val => invalidValueCounts[val]);
+        
+        // Create chart
+        const chartContainer = document.createElement('div');
+        chartContainer.className = 'card';
+        
+        chartContainer.innerHTML = `
+            <div class="card-header">
+                <h6 class="mb-0">${column} (${columnCorrections.length} issues)</h6>
+            </div>
+            <div class="card-body">
+                <canvas id="chart-${column.replace(/\s+/g, '-')}" width="400" height="200"></canvas>
+            </div>
+        `;
+        
+        columnContainer.appendChild(chartContainer);
+        columnChartsContainer.appendChild(columnContainer);
+        
+        // Create chart
+        const chartCtx = document.getElementById(`chart-${column.replace(/\s+/g, '-')}`).getContext('2d');
+        new Chart(chartCtx, {
+            type: 'bar',
+            data: {
+                labels: topInvalidValues.map(val => val.length > 20 ? val.substring(0, 20) + '...' : val),
+                datasets: [{
+                    label: 'Occurrences',
+                    data: topInvalidValueCounts,
+                    backgroundColor: '#36A2EB'
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            precision: 0
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            title: function(tooltipItems) {
+                                const idx = tooltipItems[0].dataIndex;
+                                return topInvalidValues[idx];
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+    
+    // Create tables of common issues
+    const commonIssuesContainer = document.getElementById('common-issues-container');
+    
+    sortedColumns.forEach(column => {
+        const columnCorrections = correctionsByColumn[column];
+        
+        // Count occurrences of each invalid value
+        const invalidValueCounts = {};
+        columnCorrections.forEach(correction => {
+            const originalValue = typeof correction.original_value === 'string' ? 
+                correction.original_value : JSON.stringify(correction.original_value);
+            
+            if (!invalidValueCounts[originalValue]) {
+                invalidValueCounts[originalValue] = {
+                    count: 0,
+                    suggestedValues: correction.suggested_values
+                };
+            }
+            invalidValueCounts[originalValue].count++;
+        });
+        
+        // Get all invalid values sorted by frequency
+        const sortedInvalidValues = Object.keys(invalidValueCounts)
+            .sort((a, b) => invalidValueCounts[b].count - invalidValueCounts[a].count);
+        
+        // Create table container
+        const tableContainer = document.createElement('div');
+        tableContainer.className = 'mb-4';
+        
+        // Create table header
+        tableContainer.innerHTML = `
+            <h6>${column}</h6>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped">
+                    <thead>
+                        <tr>
+                            <th>Invalid Value</th>
+                            <th>Count</th>
+                            <th>Suggested Corrections</th>
+                        </tr>
+                    </thead>
+                    <tbody id="issue-table-${column.replace(/\s+/g, '-')}">
+                    </tbody>
+                </table>
+            </div>
+        `;
+        
+        commonIssuesContainer.appendChild(tableContainer);
+        
+        // Add table rows
+        const tableBody = document.getElementById(`issue-table-${column.replace(/\s+/g, '-')}`);
+        
+        sortedInvalidValues.forEach(invalidValue => {
+            const row = document.createElement('tr');
+            
+            // Invalid value cell
+            const invalidValueCell = document.createElement('td');
+            invalidValueCell.textContent = invalidValue.length > 50 ? 
+                invalidValue.substring(0, 50) + '...' : invalidValue;
+            invalidValueCell.title = invalidValue;
+            
+            // Count cell
+            const countCell = document.createElement('td');
+            countCell.textContent = invalidValueCounts[invalidValue].count;
+            
+            // Suggested values cell
+            const suggestedValuesCell = document.createElement('td');
+            const suggestions = invalidValueCounts[invalidValue].suggestedValues.slice(0, 3); // Top 3 for display
+            
+            if (suggestions && suggestions.length > 0) {
+                suggestedValuesCell.textContent = suggestions.join(', ');
+            } else {
+                suggestedValuesCell.textContent = 'No suggestions';
+            }
+            
+            // Add cells to row
+            row.appendChild(invalidValueCell);
+            row.appendChild(countCell);
+            row.appendChild(suggestedValuesCell);
+            
+            // Add row to table
+            tableBody.appendChild(row);
+        });
+    });
+    
+    // Handle proceed button click
+    document.getElementById('proceed-btn').addEventListener('click', function() {
+        window.location.href = '/corrections';
+    });
+    
+    // Handle back button click
+    document.getElementById('back-btn').addEventListener('click', function() {
+        window.location.href = '/';
+    });
+});
+</script>
+{% endblock %}

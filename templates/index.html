@@ -159,18 +159,28 @@ document.addEventListener('DOMContentLoaded', function() {
                 progressContainer.classList.add('d-none');
                 processBtn.disabled = false;
             } else {
-                // Success - update progress and redirect to corrections page
+                // Success - update progress and redirect to analysis page
                 progressBar.style.width = '100%';
                 progressPercentage.textContent = '100%';
                 progressMessage.textContent = 'Processing complete!';
                 
-                // Store the results in session storage and redirect
+                // Store the results in session storage
                 sessionStorage.setItem('corrections', JSON.stringify(data.corrections));
                 sessionStorage.setItem('csv_rows', data.csv_rows);
+                sessionStorage.setItem('debug_csv_columns', data.debug_csv_columns);
+                sessionStorage.setItem('debug_schema_properties', data.debug_schema_properties);
                 
-                // Redirect after a short delay to show 100% completion
+                // Also store analysis data
+                if (data.column_summary) {
+                    sessionStorage.setItem('column_summary', JSON.stringify(data.column_summary));
+                }
+                if (data.invalid_value_counts) {
+                    sessionStorage.setItem('invalid_value_counts', JSON.stringify(data.invalid_value_counts));
+                }
+                
+                // Redirect to analysis page after a short delay
                 setTimeout(function() {
-                    window.location.href = '/corrections';
+                    window.location.href = '/analysis';
                 }, 500);
             }
         })

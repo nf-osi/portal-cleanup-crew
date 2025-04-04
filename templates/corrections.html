@@ -18,6 +18,14 @@
                     <p class="mb-1">CSV Size: <span id="csv-size" class="fw-bold">0</span> rows</p>
                     <p class="mb-0"><span id="correction-count" class="fw-bold">0</span> corrections suggested</p>
                 </div>
+                
+                <div>
+                    <div class="input-group">
+                        <input type="text" class="form-control form-control-sm" id="filter-input" placeholder="Filter by column or value...">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" id="filter-btn">Filter</button>
+                        <button class="btn btn-sm btn-outline-danger" type="button" id="clear-filter-btn">Clear</button>
+                    </div>
+                </div>
             </div>
 
             <div class="alert alert-primary" role="alert">
@@ -61,7 +69,12 @@
             <table class="table table-bordered table-hover">
                 <thead class="table-light sticky-top">
                     <tr>
-                        <th style="width: 70px;">Apply</th>
+                        <th style="width: 70px;">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="select-all-checkbox">
+                                <label class="form-check-label" for="select-all-checkbox">All</label>
+                            </div>
+                        </th>
                         <th style="width: 70px;">Row</th>
                         <th style="width: 150px;">Column</th>
                         <th>Original Value</th>
@@ -77,7 +90,8 @@
 
         <div id="apply-btns" class="mt-4">
             <button id="apply-btn" class="btn btn-success me-2">Apply Selected Corrections</button>
-            <button id="cancel-btn" class="btn btn-secondary">Cancel</button>
+            <button id="back-btn" class="btn btn-secondary me-2">Back to Analysis</button>
+            <button id="cancel-btn" class="btn btn-outline-secondary">Cancel</button>
         </div>
 
         <div id="progress-container" class="mt-4 d-none">
@@ -107,17 +121,25 @@ document.addEventListener('DOMContentLoaded', function() {
     const applyBtns = document.getElementById('apply-btns');
     const selectAllBtn = document.getElementById('select-all-btn');
     const deselectAllBtn = document.getElementById('deselect-all-btn');
+    const selectAllCheckbox = document.getElementById('select-all-checkbox');
     const applyBtn = document.getElementById('apply-btn');
+    const backBtn = document.getElementById('back-btn');
     const cancelBtn = document.getElementById('cancel-btn');
     const progressContainer = document.getElementById('progress-container');
     const progressBar = document.getElementById('progress-bar');
     const progressMessage = document.getElementById('progress-message');
     const progressPercentage = document.getElementById('progress-percentage');
     const errorContainer = document.getElementById('error-container');
+    const filterInput = document.getElementById('filter-input');
+    const filterBtn = document.getElementById('filter-btn');
+    const clearFilterBtn = document.getElementById('clear-filter-btn');
     
     // Get data from session storage
     const corrections = JSON.parse(sessionStorage.getItem('corrections') || '[]');
     const csvRows = parseInt(sessionStorage.getItem('csv_rows') || '0');
+    
+    // Keep track of all checkboxes
+    let allCheckboxes = [];
     
     // Update UI with basic info
     csvSizeEl.textContent = csvRows.toLocaleString();
@@ -142,7 +164,17 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     } else {
         // Populate corrections table
-        corrections.forEach((correction, index) => {
+        populateCorrectionsTable(corrections);
+    }
+    
+    // Function to populate table with corrections
+    function populateCorrectionsTable(correctionsToShow) {
+        // Clear existing rows
+        correctionsTbody.innerHTML = '';
+        allCheckboxes = [];
+        
+        // Add rows for each correction
+        correctionsToShow.forEach((correction, index) => {
             const row = document.createElement('tr');
             
             // Create checkbox cell
@@ -155,6 +187,9 @@ document.addEventListener('DOMContentLoaded', function() {
             checkbox.dataset.index = index;
             checkbox.checked = true;
             checkboxCell.appendChild(checkbox);
+            
+            // Add to our list of checkboxes
+            allCheckboxes.push(checkbox);
             
             // Create row number cell
             const rowNumberCell = document.createElement('td');
@@ -182,6 +217,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     const option = document.createElement('option');
                     option.value = suggestionIndex;
                     option.textContent = suggestion;
+                    // Check if this is the selected value
+                    if (suggestion === correction.selected_value) {
+                        option.selected = true;
+                    }
                     select.appendChild(option);
                 });
                 
@@ -215,28 +254,102 @@ document.addEventListener('DOMContentLoaded', function() {
             // Add row to table
             correctionsTbody.appendChild(row);
         });
+        
+        // Update checkbox count
+        updateSelectAllCheckbox();
     }
     
-    // Handle select/deselect all
+    // Handle select/deselect all buttons
     selectAllBtn.addEventListener('click', function() {
-        document.querySelectorAll('.correction-checkbox').forEach(checkbox => {
+        allCheckboxes.forEach(checkbox => {
             checkbox.checked = true;
         });
+        updateSelectAllCheckbox();
     });
     
     deselectAllBtn.addEventListener('click', function() {
-        document.querySelectorAll('.correction-checkbox').forEach(checkbox => {
+        allCheckboxes.forEach(checkbox => {
             checkbox.checked = false;
         });
+        updateSelectAllCheckbox();
+    });
+    
+    // Handle select all checkbox
+    selectAllCheckbox.addEventListener('change', function() {
+        const checked = this.checked;
+        allCheckboxes.forEach(checkbox => {
+            checkbox.checked = checked;
+        });
+    });
+    
+    // Update the state of the select all checkbox
+    function updateSelectAllCheckbox() {
+        if (allCheckboxes.length === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+            return;
+        }
+        
+        const checkedCount = allCheckboxes.filter(cb => cb.checked).length;
+        
+        if (checkedCount === 0) {
+            selectAllCheckbox.checked = false;
+            selectAllCheckbox.indeterminate = false;
+        } else if (checkedCount === allCheckboxes.length) {
+            selectAllCheckbox.checked = true;
+            selectAllCheckbox.indeterminate = false;
+        } else {
+            selectAllCheckbox.indeterminate = true;
+        }
+    }
+    
+    // Handle filtering
+    function applyFilter() {
+        const filterText = filterInput.value.toLowerCase();
+        
+        if (!filterText) {
+            // If filter is empty, show all corrections
+            populateCorrectionsTable(corrections);
+            return;
+        }
+        
+        // Filter corrections
+        const filteredCorrections = corrections.filter(correction => {
+            const columnMatch = correction.column_name.toLowerCase().includes(filterText);
+            const valueMatch = String(correction.original_value).toLowerCase().includes(filterText);
+            return columnMatch || valueMatch;
+        });
+        
+        // Update table with filtered corrections
+        populateCorrectionsTable(filteredCorrections);
+        
+        // Update count
+        correctionCountEl.textContent = `${filteredCorrections.length.toLocaleString()} (filtered from ${corrections.length.toLocaleString()})`;
+    }
+    
+    filterBtn.addEventListener('click', applyFilter);
+    
+    filterInput.addEventListener('keyup', function(event) {
+        if (event.key === 'Enter') {
+            applyFilter();
+        }
+    });
+    
+    clearFilterBtn.addEventListener('click', function() {
+        filterInput.value = '';
+        populateCorrectionsTable(corrections);
+        correctionCountEl.textContent = corrections.length.toLocaleString();
     });
     
     // Handle apply corrections
     applyBtn.addEventListener('click', function() {
         // Get selected corrections
         const selectedCorrections = [];
-        document.querySelectorAll('.correction-checkbox:checked').forEach(checkbox => {
-            const index = parseInt(checkbox.dataset.index);
-            selectedCorrections.push(corrections[index]);
+        allCheckboxes.forEach(checkbox => {
+            if (checkbox.checked) {
+                const index = parseInt(checkbox.dataset.index);
+                selectedCorrections.push(corrections[index]);
+            }
         });
         
         if (selectedCorrections.length === 0) {
@@ -304,6 +417,11 @@ document.addEventListener('DOMContentLoaded', function() {
             progressContainer.classList.add('d-none');
             applyBtns.classList.remove('d-none');
         });
+    });
+    
+    // Handle back button
+    backBtn.addEventListener('click', function() {
+        window.location.href = '/analysis';
     });
     
     // Handle cancel button

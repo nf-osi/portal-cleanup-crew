@@ -158,10 +158,14 @@ class SynapseMetadataCorrector:
             
         return valid_values
     
-    def find_best_matches(self, value, valid_options, max_matches=3):
-        """Find the best matching suggestions for a value"""
+    def find_best_matches(self, value, valid_options, max_matches=None):
+        """Find the best matching suggestions for a value, including all valid options"""
         if not value or not valid_options:
             return []
+        
+        # Handle special cases for empty/null values
+        if self.is_empty_value(value):
+            return []  # Return empty list for null values
             
         # Handle array values in JSON string format
         original_is_array = False
@@ -173,6 +177,10 @@ class SynapseMetadataCorrector:
                 original_array_format = value
                 parsed_array = json.loads(value)
                 if isinstance(parsed_array, list):
+                    # Check for special cases like [""] or ["nan"]
+                    if len(parsed_array) == 1 and self.is_empty_value(parsed_array[0]):
+                        return []  # Treat as null
+                    
                     values_to_check = parsed_array
                     original_is_array = True
                 else:
@@ -180,6 +188,10 @@ class SynapseMetadataCorrector:
             except json.JSONDecodeError:
                 values_to_check = [value]
         elif isinstance(value, list):
+            # Check for special cases like [""] or ["nan"]
+            if len(value) == 1 and self.is_empty_value(value[0]):
+                return []  # Treat as null
+                
             values_to_check = value
             original_is_array = True
         else:
@@ -225,8 +237,8 @@ class SynapseMetadataCorrector:
         # Sort by score
         matches.sort(key=lambda x: x['score'], reverse=True)
         
-        # Get top matches
-        top_matches = matches[:max_matches]
+        # Get all matches, or top matches if max_matches is specified
+        top_matches = matches[:max_matches] if max_matches else matches
         
         # Format suggestions based on original format
         suggestions = []
@@ -250,6 +262,19 @@ class SynapseMetadataCorrector:
                 suggestions.append(match['label'])
                 
         return suggestions
+    
+    def is_empty_value(self, value):
+        """Check if a value should be considered empty/null"""
+        if pd.isna(value) or value is None or value == '':
+            return True
+            
+        if isinstance(value, str):
+            # Check for "nan", "null", "none", etc.
+            value_lower = value.lower().strip()
+            if value_lower in ('nan', 'null', 'none', 'na'):
+                return True
+                
+        return False
     
     def generate_corrections(self):
         """Generate correction suggestions for CSV data"""
@@ -442,6 +467,11 @@ def index():
 def corrections():
     return render_template('corrections.html')
 
+@app.route('/analysis')
+def analysis():
+    """Show analysis of the metadata issues"""
+    return render_template('analysis.html')
+
 @app.route('/download')
 def download():
     download_path = request.args.get('path', '')
@@ -498,6 +528,38 @@ def upload_files():
         valid_values = corrector.extract_valid_values()
         debug_schema_properties = ', '.join(valid_values.keys())
         
+        # Analyze patterns in the corrections for visualization
+        column_summary = {}
+        invalid_value_counts = {}
+        
+        # Process corrections to extract patterns
+        for correction in corrections:
+            column = correction.get('column_name', '')
+            original_value = correction.get('original_value', '')
+            
+            # Initialize column summary entry if needed
+            if column not in column_summary:
+                column_summary[column] = {
+                    'count': 0,
+                    'values': {}
+                }
+            
+            # Increment column counter
+            column_summary[column]['count'] += 1
+            
+            # Convert value to string representation for counting
+            value_str = str(original_value)
+            
+            # Count occurrences of each value
+            if value_str not in column_summary[column]['values']:
+                column_summary[column]['values'][value_str] = 0
+            column_summary[column]['values'][value_str] += 1
+            
+            # Add to global invalid value counts
+            if value_str not in invalid_value_counts:
+                invalid_value_counts[value_str] = 0
+            invalid_value_counts[value_str] += 1
+        
         # Return results
         return jsonify({
             'status': 'success',
@@ -505,7 +567,9 @@ def upload_files():
             'correction_count': len(corrections),
             'corrections': corrections,
             'debug_csv_columns': debug_csv_columns,
-            'debug_schema_properties': debug_schema_properties
+            'debug_schema_properties': debug_schema_properties,
+            'column_summary': column_summary,
+            'invalid_value_counts': invalid_value_counts
         })
     except Exception as e:
         import traceback
@@ -561,3 +625,5 @@ def apply_corrections():
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+
