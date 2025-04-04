@@ -1,2 +1,37 @@
-.DS_store
+# macOS system files
+.DS_Store
+
+# User uploads
 uploads/*
+# Keep the uploads directory itself
+!uploads/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.conda/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Flask
+instance/
+.webassets-cache
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.*
