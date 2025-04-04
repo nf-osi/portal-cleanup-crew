@@ -15,12 +15,8 @@ A Python web application for correcting metadata in CSV files exported from Syna
 
 ### Using Conda (Recommended)
 
-1. Create the folder structure and place all files in their respective locations:
-   ```
-   mkdir -p synapse-metadata-corrector/templates
-   # Copy all Python files to synapse-metadata-corrector/
-   # Copy all HTML files to synapse-metadata-corrector/templates/
-   ```
+1. Clone this repository.
+
 
 2. Navigate to the project directory:
    ```
