@@ -13,22 +13,73 @@ A Python web application for correcting metadata in CSV files exported from Syna
 
 ## Installation
 
-1. Clone this repository:
+### Using Conda (Recommended)
+
+1. Create the folder structure and place all files in their respective locations:
    ```
-   git clone https://github.com/yourusername/synapse-metadata-corrector.git
+   mkdir -p synapse-metadata-corrector/templates
+   # Copy all Python files to synapse-metadata-corrector/
+   # Copy all HTML files to synapse-metadata-corrector/templates/
+   ```
+
+2. Navigate to the project directory:
+   ```
    cd synapse-metadata-corrector
    ```
 
-2. Create a virtual environment (optional but recommended):
+3. Create the Conda environment:
    ```
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   conda env create -f environment.yml
    ```
 
-3. Install the required dependencies:
+4. Activate the environment:
    ```
-   pip install -r requirements.txt
+   conda activate synapse-corrector
    ```
+
+5. Run the application:
+   ```
+   python app.py
+   ```
+
+6. Open your browser and go to http://localhost:5000
+
+### Alternative Installation (Manual)
+
+If you prefer not to use the environment.yml file:
+
+1. Create a new environment with a compatible Python version:
+   ```
+   conda create -n synapse-corrector python=3.10
+   conda activate synapse-corrector
+   ```
+
+2. Install the core dependencies:
+   ```
+   conda install flask pandas=1.5
+   ```
+
+3. Install remaining dependencies:
+   ```
+   pip install Werkzeug Jinja2 MarkupSafe itsdangerous
+   ```
+
+## Project Structure
+
+```
+synapse-metadata-corrector/
+├── app.py                   # Main Flask application
+├── environment.yml          # Conda environment specification
+├── requirements.txt         # Python dependencies (alternative to environment.yml)
+├── uploads/                 # Temporary storage for uploaded files
+├── templates/               # HTML templates
+│   ├── base.html            # Base template with common elements
+│   ├── index.html           # File upload page
+│   ├── analysis.html        # Analysis visualization page
+│   ├── corrections.html     # Corrections review page
+│   └── download.html        # Download page
+└── README.md                # This file
+```
 
 ## Usage
 
@@ -47,21 +98,6 @@ A Python web application for correcting metadata in CSV files exported from Syna
 
 6. Upload the corrected CSV back to Synapse
 
-## Project Structure
-
-```
-synapse-metadata-corrector/
-├── app.py                   # Main Flask application
-├── requirements.txt         # Python dependencies
-├── uploads/                 # Temporary storage for uploaded files
-├── templates/               # HTML templates
-│   ├── base.html            # Base template with common elements
-│   ├── index.html           # File upload page
-│   ├── corrections.html     # Corrections review page
-│   └── download.html        # Download page
-└── README.md                # This file
-```
-
 ## How It Works
 
 1. **File Parsing**: The application parses CSV and JSONLD files using pandas and the JSON library
@@ -79,11 +115,21 @@ synapse-metadata-corrector/
 5. **Correction Application**: Selected corrections are applied to the CSV data
 6. **Export**: The corrected CSV is made available for download
 
+## Troubleshooting
+
+### Python/Pandas Compatibility Issues
+
+The error you may encounter is because pandas 2.1.0 isn't compatible with Python 3.13. In the environment.yml file, we're using:
+- Python 3.10 (stable and widely supported)
+- pandas 1.3.0 or newer, but less than 2.0.0 (compatible with our Python version)
+
+If you need to use a specific Python version for other projects, consider creating a dedicated conda environment for this application.
+
 ## Requirements
 
-- Python 3.7+
+- Python 3.10+
 - Flask
-- pandas
+- pandas (1.3.0 - 1.5.x)
 - numpy
 - difflib (standard library)
 
