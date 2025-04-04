@@ -20,7 +20,7 @@ A Python web application for correcting metadata in CSV files exported from Syna
 
 2. Navigate to the project directory:
    ```
-   cd synapse-metadata-corrector
+   cd metadata-prot
    ```
 
 3. Create the Conda environment:
@@ -63,7 +63,7 @@ If you prefer not to use the environment.yml file:
 ## Project Structure
 
 ```
-synapse-metadata-corrector/
+metadata-prot/
 ├── app.py                   # Main Flask application
 ├── environment.yml          # Conda environment specification
 ├── requirements.txt         # Python dependencies (alternative to environment.yml)
