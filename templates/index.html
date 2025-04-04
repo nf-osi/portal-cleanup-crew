@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block title %}Synapse Metadata Corrector - Upload Files{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white">
+                <h4 class="card-title mb-0">Upload Files</h4>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info" role="alert">
+                    <i class="bi bi-info-circle-fill me-2"></i>
+                    Upload a CSV from a Synapse fileview and a JSONLD data model schema to identify and correct metadata issues.
+                </div>
+
+                <form id="upload-form" enctype="multipart/form-data">
+                    <div class="mb-4">
+                        <label for="csv-file" class="form-label fw-bold">CSV File from Synapse Fileview:</label>
+                        <input type="file" class="form-control" id="csv-file" name="csv_file" accept=".csv" required>
+                        <div class="form-text">Export a CSV file from your Synapse.org fileview</div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="jsonld-file" class="form-label fw-bold">JSONLD Data Model Schema:</label>
+                        <input type="file" class="form-control" id="jsonld-file" name="jsonld_file" accept=".json,.jsonld" required>
+                        <div class="form-text">Upload the JSONLD schema defining valid metadata values</div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label fw-bold">Performance Options:</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="limit-rows-checkbox">
+                            <label class="form-check-label" for="limit-rows-checkbox">
+                                Limit number of rows processed (recommended for large files)
+                            </label>
+                        </div>
+                        <div class="input-group mt-2" style="max-width: 200px;">
+                            <label class="input-group-text" for="row-limit">Max rows:</label>
+                            <input type="number" class="form-control" id="row-limit" value="1000" min="100" disabled>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary" id="process-btn">
+                        Process Files
+                    </button>
+                </form>
+
+                <div id="progress-container" class="mt-4 d-none">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span id="progress-message">Processing files...</span>
+                        <span id="progress-percentage">0%</span>
+                    </div>
+                    <div class="progress">
+                        <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div id="error-container" class="alert alert-danger mt-4 d-none" role="alert"></div>
+            </div>
+        </div>
+
+        <div class="card shadow-sm mt-4">
+            <div class="card-header bg-white">
+                <h5 class="card-title mb-0">Data Format Notes</h5>
+            </div>
+            <div class="card-body">
+                <ul class="small text-muted mb-0">
+                    <li>The CSV file should be exported directly from a Synapse fileview</li>
+                    <li>The JSONLD schema should contain property definitions with valid values</li>
+                    <li>For Synapse schemas, the app will look for schema:rangeIncludes arrays to identify valid values</li>
+                    <li>The app will match column names in the CSV to property names in the schema</li>
+                    <li>All data is processed locally in your browser - no information is sent to any server</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Handle checkbox for row limiting
+    const limitRowsCheckbox = document.getElementById('limit-rows-checkbox');
+    const rowLimitInput = document.getElementById('row-limit');
+    
+    limitRowsCheckbox.addEventListener('change', function() {
+        rowLimitInput.disabled = !this.checked;
+    });
+    
+    // Handle form submission
+    const uploadForm = document.getElementById('upload-form');
+    const processBtn = document.getElementById('process-btn');
+    const progressContainer = document.getElementById('progress-container');
+    const progressBar = document.getElementById('progress-bar');
+    const progressMessage = document.getElementById('progress-message');
+    const progressPercentage = document.getElementById('progress-percentage');
+    const errorContainer = document.getElementById('error-container');
+    
+    uploadForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        // Show progress and hide any previous errors
+        progressContainer.classList.remove('d-none');
+        errorContainer.classList.add('d-none');
+        processBtn.disabled = true;
+        
+        // Set initial progress
+        progressBar.style.width = '0%';
+        progressMessage.textContent = 'Starting file processing...';
+        progressPercentage.textContent = '0%';
+        
+        // Prepare form data
+        const formData = new FormData();
+        formData.append('csv_file', document.getElementById('csv-file').files[0]);
+        formData.append('jsonld_file', document.getElementById('jsonld-file').files[0]);
+        
+        // Add row limit if checked
+        if (limitRowsCheckbox.checked) {
+            formData.append('row_limit', rowLimitInput.value);
+        }
+        
+        // Simulate progress until we get a response (for better UX)
+        let progress = 0;
+        const progressInterval = setInterval(function() {
+            if (progress < 90) {
+                progress += 5;
+                progressBar.style.width = progress + '%';
+                progressPercentage.textContent = progress + '%';
+                
+                // Update message based on progress
+                if (progress < 20) {
+                    progressMessage.textContent = 'Parsing files...';
+                } else if (progress < 50) {
+                    progressMessage.textContent = 'Extracting schema values...';
+                } else if (progress < 80) {
+                    progressMessage.textContent = 'Identifying corrections...';
+                } else {
+                    progressMessage.textContent = 'Finalizing results...';
+                }
+            }
+        }, 300);
+        
+        // Submit the form
+        fetch('/upload', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            clearInterval(progressInterval);
+            
+            if (data.error) {
+                // Show error
+                errorContainer.textContent = data.error;
+                errorContainer.classList.remove('d-none');
+                progressContainer.classList.add('d-none');
+                processBtn.disabled = false;
+            } else {
+                // Success - update progress and redirect to corrections page
+                progressBar.style.width = '100%';
+                progressPercentage.textContent = '100%';
+                progressMessage.textContent = 'Processing complete!';
+                
+                // Store the results in session storage and redirect
+                sessionStorage.setItem('corrections', JSON.stringify(data.corrections));
+                sessionStorage.setItem('csv_rows', data.csv_rows);
+                
+                // Redirect after a short delay to show 100% completion
+                setTimeout(function() {
+                    window.location.href = '/corrections';
+                }, 500);
+            }
+        })
+        .catch(error => {
+            clearInterval(progressInterval);
+            errorContainer.textContent = 'An error occurred during processing: ' + error.message;
+            errorContainer.classList.remove('d-none');
+            progressContainer.classList.add('d-none');
+            processBtn.disabled = false;
+        });
+    });
+});
+</script>
+{% endblock %}

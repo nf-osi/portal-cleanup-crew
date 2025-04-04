@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Synapse Metadata Corrector - Download Corrected CSV{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white">
+                <h4 class="card-title mb-0">Download Corrected CSV</h4>
+            </div>
+            <div class="card-body text-center py-5">
+                <div class="mb-4">
+                    <div class="text-success mb-3">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" fill="currentColor" class="bi bi-check-circle-fill" viewBox="0 0 16 16">
+                            <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zm-3.97-3.03a.75.75 0 0 0-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-.01-1.05z"/>
+                        </svg>
+                    </div>
+                    <h4 class="text-success">Corrections applied successfully!</h4>
+                    <p class="text-muted mb-0">Your metadata has been corrected according to your selections.</p>
+                </div>
+                
+                <div class="mb-4">
+                    <a href="{{ download_url }}" download="corrected_synapse_data.csv" class="btn btn-primary btn-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-download me-2" viewBox="0 0 16 16">
+                            <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+                            <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+                        </svg>
+                        Download Corrected CSV
+                    </a>
+                </div>
+                
+                <div>
+                    <a href="/" class="btn btn-outline-secondary">
+                        Start Over
+                    </a>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card shadow-sm mt-4">
+            <div class="card-header bg-white">
+                <h5 class="card-title mb-0">Next Steps</h5>
+            </div>
+            <div class="card-body">
+                <p>After downloading your corrected CSV, you can:</p>
+                <ol>
+                    <li>Review the changes made to ensure they're appropriate for your data</li>
+                    <li>Upload the corrected CSV back to Synapse.org</li>
+                    <li>Run additional validation if needed</li>
+                </ol>
+                <p class="mb-0 text-muted small">Note: If you found this tool useful, consider sharing it with colleagues who also work with Synapse metadata.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Auto-download after 1 second
+    setTimeout(function() {
+        document.querySelector('a[download]').click();
+    }, 1000);
+});
+</script>
+{% endblock %}
