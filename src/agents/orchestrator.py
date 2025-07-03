@@ -1,6 +1,6 @@
 from crewai import Agent, Crew, Process, Task
 import yaml
-from .term_standardizer import get_term_standardizer_agent
+from .uncontrolled_vocab_normalizer import get_uncontrolled_vocab_normalizer_agent
 from .freetext_corrector import get_freetext_corrector_agent
 from src.utils.llm_utils import get_llm
 import os
@@ -8,6 +8,7 @@ import synapseclient
 import json
 from src.workflows.correction import CorrectionWorkflow
 from src.workflows.freetext_correction import FreetextCorrectionWorkflow
+from src.workflows.uncontrolled_vocab_normalization import UncontrolledVocabNormalizationWorkflow
 from .github_issue_filer import GitHubIssueFilerAgent
 import getpass
 
@@ -20,7 +21,7 @@ class OrchestratorAgent:
         self.syn = self._login_to_synapse()
         
         self.agents = {
-            "term_standardizer": get_term_standardizer_agent(llm=self.llm),
+            "uncontrolled_vocab_normalizer": get_uncontrolled_vocab_normalizer_agent(llm=self.llm),
             "freetext_corrector": get_freetext_corrector_agent(llm=self.llm),
             "github_issue_filer": GitHubIssueFilerAgent
         }
@@ -95,8 +96,12 @@ class OrchestratorAgent:
                 )
                 workflow.run()
             elif choice == '2':
-                # self._handle_term_standardization()
-                print("Term standardization not yet implemented.")
+                workflow = UncontrolledVocabNormalizationWorkflow(
+                    syn=self.syn,
+                    llm=self.llm,
+                    views=self.views
+                )
+                workflow.run()
             elif choice == '3':
                 workflow = FreetextCorrectionWorkflow(
                     syn=self.syn, 

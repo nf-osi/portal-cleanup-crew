@@ -1,13 +1,13 @@
 from crewai import Agent
 
-def get_term_standardizer_agent(llm):
+def get_uncontrolled_vocab_normalizer_agent(llm):
     """
-    Creates the Uncontrolled Term Standardizer agent.
+    Creates the Uncontrolled Vocab Normalizer agent.
     """
     return Agent(
-        role='Uncontrolled Term Standardizer',
+        role='Uncontrolled Vocabulary Normalizer',
         goal=(
-            "Standardize uncontrolled terms in Synapse annotations to "
+            "Standardize uncontrolled vocabulary terms in Synapse annotations to "
             "ensure consistency across the portal."
         ),
         backstory=(

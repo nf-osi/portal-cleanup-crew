@@ -22,3 +22,7 @@ annotation_corrector:
   views:
     main_fileview: "syn16858331"
     study_long_text: "syn16787123"
+    portal_initiatives: "syn24189696"
+    portal_studies_view_staging: "syn52677631"
+    ar_bypasses_in_nf_data_portal: "syn68414165"
+    portal_publications: "syn16857542"
