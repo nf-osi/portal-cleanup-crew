@@ -249,7 +249,7 @@ class FreetextCorrectionWorkflow:
                 
                 self.follow_up_tasks.append({
                     'type': 'github_issue',
-                    'repo': source,
+                    'repo_url': source,
                     'corrections': corrections_with_ids
                 })
 

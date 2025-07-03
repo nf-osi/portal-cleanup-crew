@@ -33,11 +33,11 @@ class GitHubIssueFilerAgent:
             study_ids_str = ", ".join(correction['study_ids'])
             body += (
                 f"\\n\\n### Correction for Study ID(s): `{study_ids_str}`\\n"
-                f"- **Column**: `{correction['column_name']}`\\n"
+                f"- **Column**: `{column_name}`\\n"
                 f"- **Action**: The following change is proposed:\\n"
                 "\\n```diff\\n"
-                f"- {correction['original_text']}\\n"
-                f"+ {correction['corrected_text']}\\n"
+                f"- {correction['original']}\\n"
+                f"+ {correction['corrected']}\\n"
                 "```"
             )
         return body
@@ -52,7 +52,7 @@ class GitHubIssueFilerAgent:
         corrections = task['corrections']
         
         # We can assume all corrections are for the same column in this batch
-        column_name = corrections[0]['column_name'] if corrections else "N/A"
+        column_name = "summary"
 
         print(f"\\n--- GitHub Issue Filing Workflow ---")
         print(f"Received task to file an issue for {len(corrections)} corrections in {repo_url}")
