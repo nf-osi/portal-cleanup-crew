@@ -20,13 +20,8 @@ def main():
         
         # Correctly parse the nested configuration
         ac_config = config.get('annotation_corrector', {})
-        view_synapse_id = ac_config.get('main_fileview')
-        data_model_path = ac_config.get('data_model_url')
-
-        if not view_synapse_id or not data_model_path:
-            raise ValueError("Configuration error: 'main_fileview' and 'data_model_url' must be set under 'annotation_corrector' in config.yaml")
-
-        orchestrator = OrchestratorAgent(view_synapse_id=view_synapse_id, data_model_path=data_model_path)
+        
+        orchestrator = OrchestratorAgent(ac_config=ac_config)
         orchestrator.run()
     except (ValueError, FileNotFoundError) as e:
         print(f"\nError: {e}")

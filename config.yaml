@@ -18,5 +18,7 @@ llm:
     OPENAI_API_BASE: "https://openrouter.ai/api/v1"
 
 annotation_corrector:
-  data_model_url: https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld"
-  main_fileview: "syn16858331"
+  data_model_url: https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld
+  views:
+    main_fileview: "syn16858331"
+    study_long_text: "syn16787123"

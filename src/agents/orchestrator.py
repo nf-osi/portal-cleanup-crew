@@ -1,22 +1,29 @@
 from crewai import Agent, Crew, Process, Task
 import yaml
 from .term_standardizer import get_term_standardizer_agent
-from .typo_corrector import get_typo_corrector_agent
+from .freetext_corrector import get_freetext_corrector_agent
 from src.utils.llm_utils import get_llm
 import os
 import synapseclient
 import json
 from src.workflows.correction import CorrectionWorkflow
+from src.workflows.freetext_correction import FreetextCorrectionWorkflow
+from .github_issue_filer import GitHubIssueFilerAgent
 import getpass
 
 class OrchestratorAgent:
-    def __init__(self, view_synapse_id=None, data_model_path=None):
-        self.view_synapse_id = view_synapse_id
-        self.data_model_path = data_model_path
+    def __init__(self, ac_config):
+        self.ac_config = ac_config
+        self.data_model_path = ac_config.get('data_model_url')
+        self.views = ac_config.get('views', {})
         self.llm = get_llm()
         self.syn = self._login_to_synapse()
-        self.standardizer_agent = get_term_standardizer_agent(llm=self.llm)
-        self.typo_agent = get_typo_corrector_agent(llm=self.llm)
+        
+        self.agents = {
+            "term_standardizer": get_term_standardizer_agent(llm=self.llm),
+            "freetext_corrector": get_freetext_corrector_agent(llm=self.llm),
+            "github_issue_filer": GitHubIssueFilerAgent
+        }
 
     def _login_to_synapse(self):
         """
@@ -50,16 +57,40 @@ class OrchestratorAgent:
             print("\\nPlease select a task to perform:")
             print("1. Correct Synapse Annotations based on data model")
             print("2. Standardize Uncontrolled Terms (e.g., investigator names)")
-            print("3. Correct Typos in Free-Text Fields")
+            print("3. Correct Free-Text Fields")
             print("4. Exit")
             
             choice = input("Enter the number of your choice: ")
 
             if choice == '1':
+                # Since this workflow operates on a single view at a time,
+                # we need to ask the user to select one, similar to the freetext workflow.
+                view_choices = list(self.views.keys())
+                if not view_choices:
+                    print("No views configured in config.yaml. Exiting.")
+                    continue
+
+                print("\nPlease select a table to work on:")
+                for i, view_name in enumerate(view_choices):
+                    print(f"{i+1}. {view_name} ({self.views[view_name]})")
+
+                while True:
+                    try:
+                        choice = int(input("Enter the number of your choice: ")) - 1
+                        if 0 <= choice < len(view_choices):
+                            selected_view_name = view_choices[choice]
+                            selected_view_id = self.views[selected_view_name]
+                            print(f"\nYou have selected: {selected_view_name}")
+                            break
+                        else:
+                            print("Invalid choice. Please enter a number from the list.")
+                    except ValueError:
+                        print("Invalid input. Please enter a number.")
+                
                 workflow = CorrectionWorkflow(
-                    syn=self.syn, 
+                    syn=self.syn,
                     llm=self.llm,
-                    view_synapse_id=self.view_synapse_id,
+                    view_synapse_id=selected_view_id,
                     data_model_path=self.data_model_path
                 )
                 workflow.run()
@@ -67,8 +98,28 @@ class OrchestratorAgent:
                 # self._handle_term_standardization()
                 print("Term standardization not yet implemented.")
             elif choice == '3':
-                # self._handle_typo_correction()
-                print("Typo correction not yet implemented.")
+                workflow = FreetextCorrectionWorkflow(
+                    syn=self.syn, 
+                    llm=self.llm,
+                    views=self.views
+                )
+                follow_up_tasks = workflow.run()
+
+                if follow_up_tasks:
+                    print("\n--- Processing Follow-up Tasks ---")
+                    for task in follow_up_tasks:
+                        if task.get('type') == 'github_issue':
+                            try:
+                                github_agent_class = self.agents.get('github_issue_filer')
+                                if github_agent_class:
+                                    github_agent = github_agent_class()
+                                    github_agent.run(task)
+                                else:
+                                    print("Error: GitHub Issue Filer Agent not configured.")
+                            except ConnectionError as e:
+                                print(f"Could not process GitHub issue task: {e}")
+                        else:
+                            print(f"Unknown follow-up task type: {task.get('type')}")
             elif choice == '4':
                 print("Exiting the assistant. Goodbye!")
                 break
