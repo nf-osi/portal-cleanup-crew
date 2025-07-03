@@ -15,7 +15,6 @@ llm:
   # For openrouter, use "https://openrouter.ai/api/v1" for OPENAI_API_BASE
   # and your OpenRouter key for OPENAI_API_KEY.
   credentials:
-    OPENROUTER_API_KEY: "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"
     OPENAI_API_BASE: "https://openrouter.ai/api/v1"
 
 annotation_corrector:

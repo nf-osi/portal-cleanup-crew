@@ -134,7 +134,10 @@ class CorrectionWorkflow:
             if final_corrections:
                 print("The following corrections will be applied:")
                 for current, new in final_corrections.items():
-                    print(f"  - Change '{current}' to '{new if new != '' else '[NULL]'}'")
+                    if new == '':
+                        print(f"  - Remove annotation for '{current}'")
+                    else:
+                        print(f"  - Change '{current}' to '{new}'")
             
             approval = input("\\nDo you approve this plan? (yes/no): ").lower()
             if approval in ['y', 'yes']:

@@ -4,7 +4,7 @@ import os
 
 def get_llm():
     """
-    Initializes and returns the LLM based on the configuration in config.yaml.
+    Initializes and returns the LLM based on the configuration in config.yaml and creds.yaml.
     """
     try:
         with open('config.yaml', 'r') as f:
@@ -12,8 +12,17 @@ def get_llm():
     except (FileNotFoundError, yaml.YAMLError):
         print("Warning: Could not read or parse config.yaml. Relying on environment variables.")
         config = {}
+    
+    try:
+        with open('creds.yaml', 'r') as f:
+            creds_config = yaml.safe_load(f).get('llm', {})
+    except (FileNotFoundError, yaml.YAMLError):
+        print("Warning: Could not read or parse creds.yaml. Relying on environment variables.")
+        creds_config = {}
 
-    credentials = config.get('credentials', {})
+    # Merge credentials, giving priority to creds.yaml
+    credentials = {**config.get('credentials', {}), **creds_config.get('credentials', {})}
+
     for key, value in credentials.items():
         os.environ[key] = value
 
