@@ -25,16 +25,23 @@ class GitHubIssueFilerAgent:
     def _format_issue_body(self, corrections, column_name):
         """Formats the list of corrections into a markdown string for the issue body."""
         body = (
-            f"Automated-suggested corrections for the column **`{column_name}`**.\n\n"
+            f"Automated vocabulary normalization suggestions for the column **`{column_name}`**.\n\n"
+            "These are standardization suggestions to improve data consistency. "
             "A human should review these changes and apply them to the relevant files in this repository.\n\n"
             "---"
         )
         for correction in corrections:
-            study_ids_str = ", ".join(correction['study_ids'])
+            # Convert study_ids to strings and filter out NaN values
+            study_ids_clean = []
+            for study_id in correction['study_ids']:
+                if study_id is not None and str(study_id) != 'nan':
+                    study_ids_clean.append(str(study_id))
+            
+            study_ids_str = ", ".join(study_ids_clean) if study_ids_clean else "N/A"
             body += (
-                f"\n\n### Correction for Study ID(s): `{study_ids_str}`\n"
+                f"\n\n### Normalization for Study ID(s): `{study_ids_str}`\n"
                 f"- **Column**: `{column_name}`\n"
-                f"- **Action**: The following change is proposed:\n"
+                f"- **Action**: The following normalization is proposed:\n"
                 "\n```diff\n"
                 f"- {correction['original']}\n"
                 f"+ {correction['corrected']}\n"
@@ -51,13 +58,13 @@ class GitHubIssueFilerAgent:
         repo_url = task['repo_url']
         corrections = task['corrections']
         
-        # We can assume all corrections are for the same column in this batch
-        column_name = "summary"
+        # Get the column name from the first correction
+        column_name = corrections[0]['column_name'] if corrections and 'column_name' in corrections[0] else 'unknown'
 
         print(f"\n--- GitHub Issue Filing Workflow ---")
         print(f"Received task to file an issue for {len(corrections)} corrections in {repo_url}")
 
-        issue_title = f"Freetext corrections for column '{column_name}'"
+        issue_title = f"Vocabulary normalization for column '{column_name}'"
         issue_body = self._format_issue_body(corrections, column_name)
 
         try:
