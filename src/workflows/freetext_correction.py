@@ -1,5 +1,7 @@
-from crewai import Crew, Process
+from crewai import Crew, Process, Agent, Task
 from src.agents.freetext_corrector import get_freetext_corrector_agent
+from src.agents.synapse_agent import get_synapse_agent
+from src.agents.github_issue_filer import GitHubIssueFilerAgent
 from src.tasks.freetext_tasks import create_freetext_correction_task
 from tqdm import tqdm
 import concurrent.futures
@@ -8,13 +10,67 @@ import re
 import time
 import synapseclient
 import pandas as pd
+from src.utils.cli_utils import prompt_for_view_and_column
 
 class FreetextCorrectionWorkflow:
-    def __init__(self, syn, llm, views):
+    def __init__(self, syn, llm, views, freetext_settings=None):
         self.syn = syn
         self.llm = llm
         self.views = views
         self.freetext_agent = get_freetext_corrector_agent(llm=self.llm)
+        self.synapse_agent = get_synapse_agent(llm=self.llm, syn=self.syn)
+
+    def _select_context_column_with_agent(self, all_columns: list, column_being_corrected: str) -> str:
+        """
+        Uses an LLM agent to select the best context column from a list.
+        """
+        # Create a temporary agent to make the selection
+        column_selector_agent = Agent(
+            role="Data Context Analyst",
+            goal=f"Select the single best column from a list that provides high-level context for a data correction. The column being corrected is '{column_being_corrected}'. The context column should ideally be a study name, project ID, or another primary identifier that helps locate the data's origin.",
+            backstory="You are an expert at understanding data table structures and identifying columns that provide the most meaningful context for data curation tasks.",
+            llm=self.llm,
+            verbose=True,
+        )
+
+        task_prompt = f"""
+        Analyze the following list of column names and select the ONE column that would provide the best context for a data correction task on the '{column_being_corrected}' column.
+
+        The best context column is typically one that represents a broader grouping, such as:
+        - A study ID or name (e.g., 'studyId', 'studyName', 'parentStudy')
+        - A project ID or name (e.g., 'projectId', 'projectName')
+        - A primary entity identifier (e.g., 'id', 'doi', 'pmid')
+
+        Do not select the column that is being corrected ('{column_being_corrected}').
+        Do not select columns that represent granular file details (e.g., 'dataFileMD5Hex', 'dataFileKey') or internal system IDs (e.g., 'etag', 'dataFileHandleId') unless they are the only option.
+
+        Here is the list of columns:
+        {all_columns}
+
+        Your final answer MUST be just the name of the selected column and nothing else.
+        """
+
+        selection_task = Task(
+            description=task_prompt,
+            agent=column_selector_agent,
+            expected_output="The name of the single best context column.",
+        )
+
+        crew = Crew(
+            agents=[column_selector_agent],
+            tasks=[selection_task],
+            process=Process.sequential,
+        )
+
+        selected_column = crew.kickoff().raw
+        
+        # Validate that the agent returned a valid column name
+        if selected_column.strip() in all_columns:
+            return selected_column.strip()
+        else:
+            # Fallback or error
+            print(f"Warning: Agent selected an invalid column '{selected_column}'. Falling back to the first column as context.")
+            return all_columns[0]
 
     def _parse_agent_output(self, raw_output: str) -> str:
         """
@@ -62,75 +118,22 @@ class FreetextCorrectionWorkflow:
     def run(self):
         print("\n--- Free-Text Correction Workflow ---")
         
-        # Prompt user to select a table
-        view_choices = list(self.views.keys())
-        if not view_choices:
+        if not self.views:
             print("No views configured in config.yaml. Exiting.")
             return
 
-        print("\nPlease select a table to work on:")
-        for i, view_name in enumerate(view_choices):
-            print(f"{i+1}. {view_name} ({self.views[view_name]})")
+        view_synapse_id, column_name, row_id_col = prompt_for_view_and_column(self.syn, self.views)
+        if not view_synapse_id:
+            return # User cancelled
 
-        while True:
-            try:
-                choice = int(input("Enter the number of your choice: ")) - 1
-                if 0 <= choice < len(view_choices):
-                    selected_view_name = view_choices[choice]
-                    self.view_synapse_id = self.views[selected_view_name]
-                    print(f"\nYou have selected: {selected_view_name}")
-                    break
-                else:
-                    print("Invalid choice. Please enter a number from the list.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
-
-        # 1. Ask user for the column name to correct
-        try:
-            view = self.syn.get(self.view_synapse_id)
-            columns = [c['name'] for c in self.syn.getColumns(view)]
-        except Exception as e:
-            print(f"Error fetching columns for view '{self.view_synapse_id}': {e}")
-            return
-
-        print("\nAvailable columns to check:")
-        for i, col in enumerate(columns):
-            print(f"{i+1}. {col}")
-        
-        while True:
-            try:
-                choice = int(input("Enter the number of the column you want to correct: ")) - 1
-                if 0 <= choice < len(columns):
-                    column_name = columns[choice]
-                    break
-                else:
-                    print("Invalid choice. Please enter a number from the list.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
+        self.view_synapse_id = view_synapse_id
 
         print(f"\n--- Checking column: '{column_name}' ---")
-
-        # Ask user for the row identifier column
-        print("\nPlease select the column that uniquely identifies rows (e.g., ROW_ID):")
-        for i, col in enumerate(columns):
-            print(f"{i+1}. {col}")
-
-        while True:
-            try:
-                choice = int(input("Enter the number of the identifier column: ")) - 1
-                if 0 <= choice < len(columns):
-                    row_id_col = columns[choice]
-                    print(f"Using '{row_id_col}' as the row identifier.")
-                    break
-                else:
-                    print("Invalid choice. Please enter a number from the list.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
 
         # 2. Query for unique, non-null values
         try:
             # Download the necessary columns to perform filtering in memory
-            query = f'SELECT "{row_id_col}", "{column_name}" FROM {self.view_synapse_id} WHERE "{column_name}" IS NOT NULL'
+            query = f'SELECT * FROM {self.view_synapse_id} WHERE "{column_name}" IS NOT NULL'
             all_data_df = self.syn.tableQuery(query, resultsAs="csv", includeRowIdAndRowVersion=False).asDataFrame()
 
             # The Synapse client sometimes renames columns when downloading.
@@ -193,7 +196,7 @@ class FreetextCorrectionWorkflow:
             if corrected_text.strip() != value.strip():
                 # Only prompt for review if a meaningful diff exists
                 if self._print_diff(value, corrected_text):
-                    prompt = "Accept (a), provide different value (d), reject (r), or accept and stop (s)? "
+                    prompt = "\nAccept (a), provide different value (d), reject (r), or accept and stop (s)? "
                     while True:
                         user_choice = input(prompt).lower()
                         if user_choice == 'a':
@@ -221,37 +224,46 @@ class FreetextCorrectionWorkflow:
             return
 
         # Ask user if they want to propagate changes to other sources
-        self.follow_up_tasks = []
         propagate_prompt = "\nDo you want to apply these corrections to other data sources (e.g., a GitHub repository)? (yes/no): "
         propagate = input(propagate_prompt).lower()
         if propagate in ['y', 'yes']:
             source = input("Please specify the data source (e.g., GitHub repository URL): ")
             if "github.com" in source:
-                corrections_with_ids = []
-                print("Gathering study identifiers for corrections...")
-                cols = [c['name'] for c in self.syn.getColumns(self.view_synapse_id)]
-                study_id_col = 'studyId' if 'studyId' in cols else None
+                try:
+                    # Initialize the GitHub issue filer agent
+                    github_agent = GitHubIssueFilerAgent()
+                    
+                    print("Agent is selecting the best context column for the GitHub issue...")
+                    cols = [c['name'] for c in self.syn.getColumns(self.view_synapse_id)]
+                    
+                    context_col = self._select_context_column_with_agent(cols, actual_column_name)
+                    print(f"Agent selected '{context_col}' as the context column.")
 
-                if not study_id_col:
-                    print(f"Warning: No 'studyId' column found in {self.view_synapse_id}. Cannot propagate changes for GitHub update.")
-                else:
-                    # The data is already in all_data_df, no need to re-query
-                    corrections_with_ids = []
-                    for original, corrected in final_corrections.items():
-                        # Find all study IDs associated with the original (uncorrected) text
-                        matching_rows = all_data_df[all_data_df[actual_column_name] == original]
-                        study_ids = matching_rows[study_id_col].unique().tolist() if study_id_col in all_data_df.columns else []
-                        corrections_with_ids.append({
-                            "original": original,
-                            "corrected": corrected,
-                            "study_ids": study_ids,
-                        })
+                    if not context_col:
+                        print(f"Warning: Agent could not select a context column. Cannot propagate changes for GitHub update.")
+                    else:
+                        # The data is already in all_data_df, no need to re-query
+                        corrections_with_ids = []
+                        for original, corrected in final_corrections.items():
+                            # Find all study IDs associated with the original (uncorrected) text
+                            matching_rows = all_data_df[all_data_df[actual_column_name] == original]
+                            context_values = matching_rows[context_col].unique().tolist() if context_col in all_data_df.columns else []
+                            corrections_with_ids.append({
+                                "original": original,
+                                "corrected": corrected,
+                                "context": context_values,
+                            })
+                        
+                        if corrections_with_ids:
+                            title = f"Data Corrections for column '{column_name}'"
+                            body = self._create_github_issue_body(corrections_with_ids, column_name)
+                            issue_url = github_agent.file_issue(title, body, source)
+                            if issue_url:
+                                print(f"✅ Created GitHub issue for freetext corrections: {issue_url}")
                 
-                self.follow_up_tasks.append({
-                    'type': 'github_issue',
-                    'repo_url': source,
-                    'corrections': corrections_with_ids
-                })
+                except Exception as e:
+                    print(f"❌ Error creating GitHub issue: {e}")
+                    print("You may need to check your GitHub CLI authentication or repository access.")
 
         # 5. Final Plan and Execution
         print("\n--- Final Plan ---")
@@ -267,36 +279,44 @@ class FreetextCorrectionWorkflow:
         print("Executing the approved correction plan...")
 
         # Find the entities to update. We already have the data in `all_data_df`.
-        entities_to_update = all_data_df[all_data_df[actual_column_name].isin(final_corrections.keys())]
+        entities_to_update = all_data_df[all_data_df[actual_column_name].isin(final_corrections.keys())].copy()
         
-        if entities_to_update.empty:
+        # Create the new column data to be updated
+        update_data = entities_to_update[[actual_row_id_col]].copy()
+        update_data[actual_column_name] = entities_to_update[actual_column_name].map(final_corrections)
+
+        if update_data.empty:
             print("Could not find any matching rows to update. This might be a data consistency issue.")
             return
 
-        updates = []
-        print("Gathering all entities to update...")
-        for _, row in tqdm(entities_to_update.iterrows(), total=len(entities_to_update)):
-            original_text = row[actual_column_name]
-            corrected_text = final_corrections[original_text]
-            updates.append({
-                row_id_col: row[actual_row_id_col],
-                column_name: corrected_text
-            })
+        print(f"Preparing to update {len(update_data)} rows...")
 
-        if not updates:
-            print("No updates to apply.")
-            return
-
-        # Convert to a DataFrame and store in Synapse
-        update_df = pd.DataFrame(updates)
-        try:
-            self.syn.store(synapseclient.Table(self.view_synapse_id, update_df))
-            print(f"\nSuccessfully applied {len(updates)} corrections to '{column_name}' in '{self.view_synapse_id}'.")
-        except Exception as e:
-            print(f"\nAn error occurred while storing the updates to Synapse: {e}")
-            print("Please check the Synapse table and try again.")
+        # Use synapse_agent to handle the table update
+        print(f"Using Synapse agent to update {len(update_data)} rows...")
+        
+        # The synapse_agent will handle proper column selection and etag management
+        update_result = self.synapse_agent.tools[1]._run(  # UpdateTableTool
+            table_id=self.view_synapse_id,
+            updates_df=update_data
+        )
+        print(f"Synapse agent result: {update_result}")
 
         print("\nFree-text correction process finished.")
 
-        if hasattr(self, 'follow_up_tasks') and self.follow_up_tasks:
-            return self.follow_up_tasks
+    def _create_github_issue_body(self, corrections_with_ids, column_name):
+        """Create a formatted body for the GitHub issue."""
+        body_lines = [
+            f"## Free-text Corrections for Column: {column_name}",
+            "",
+            f"The following corrections were applied to the `{column_name}` column:",
+            ""
+        ]
+        
+        for correction in corrections_with_ids:
+            body_lines.append(f"**Original:** {correction['original']}")
+            body_lines.append(f"**Corrected:** {correction['corrected']}")
+            if correction.get('context'):
+                body_lines.append(f"**Context:** {', '.join(correction['context'])}")
+            body_lines.append("")
+        
+        return "\n".join(body_lines)

@@ -1,6 +1,7 @@
 from crewai import Crew, Process
 from src.agents.uncontrolled_vocab_normalizer import get_uncontrolled_vocab_normalizer_agent
 from src.agents.synapse_agent import get_synapse_agent
+from src.agents.github_issue_filer import GitHubIssueFilerAgent
 from src.tasks.normalization_tasks import create_normalization_task, create_synapse_update_task
 from tqdm import tqdm
 import concurrent.futures
@@ -8,16 +9,19 @@ import difflib
 import re
 import time
 import synapseclient
-from synapseclient import Table
 import pandas as pd
 import json
+from src.utils.cli_utils import prompt_for_view_and_column
 
 class UncontrolledVocabNormalizationWorkflow:
-    def __init__(self, syn, llm, views):
+    def __init__(self, syn, llm, views, orchestrator=None):
         self.syn = syn
         self.llm = llm
         self.views = views
+        self.orchestrator = orchestrator
         self.normalizer_agent = get_uncontrolled_vocab_normalizer_agent(llm=self.llm)
+        self.synapse_agent = get_synapse_agent(llm=self.llm, syn=self.syn)
+
 
     def _parse_agent_output(self, raw_output: str) -> dict:
         """
@@ -71,75 +75,13 @@ class UncontrolledVocabNormalizationWorkflow:
     def run(self):
         print("\n--- Uncontrolled Vocabulary Normalization Workflow ---")
         
-        # Prompt user to select a table
-        view_choices = list(self.views.keys())
-        if not view_choices:
-            print("No views configured in config.yaml. Exiting.")
-            return
+        view_synapse_id, column_name, row_id_col = prompt_for_view_and_column(self.syn, self.views)
+        if not view_synapse_id:
+            return # User cancelled
 
-        print("\nPlease select a table to work on:")
-        for i, view_name in enumerate(view_choices):
-            print(f"{i+1}. {view_name} ({self.views[view_name]})")
-
-        while True:
-            try:
-                choice = int(input("Enter the number of your choice: ")) - 1
-                if 0 <= choice < len(view_choices):
-                    selected_view_name = view_choices[choice]
-                    self.view_synapse_id = self.views[selected_view_name]
-                    print(f"\nYou have selected: {selected_view_name}")
-
-                    # Determine if the selected entity is a Table or a View
-                    entity = self.syn.get(self.view_synapse_id)
-                    self.is_view = isinstance(entity, synapseclient.EntityViewSchema)
-                    print(f"Detected entity type: {'View' if self.is_view else 'Table'}")
-                    break
-                else:
-                    print("Invalid choice. Please enter a number from the list.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
-
-        # 1. Ask user for the column name to correct
-        try:
-            view = self.syn.get(self.view_synapse_id)
-            columns = [c['name'] for c in self.syn.getColumns(view)]
-        except Exception as e:
-            print(f"Error fetching columns for view '{self.view_synapse_id}': {e}")
-            return
-
-        print("\nAvailable columns to normalize:")
-        for i, col in enumerate(columns):
-            print(f"{i+1}. {col}")
+        self.view_synapse_id = view_synapse_id
         
-        while True:
-            try:
-                choice = int(input("Enter the number of the column you want to normalize: ")) - 1
-                if 0 <= choice < len(columns):
-                    column_name = columns[choice]
-                    break
-                else:
-                    print("Invalid choice. Please enter a number from the list.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
-
         print(f"\n--- Normalizing column: '{column_name}' ---")
-
-        # Ask user for the row identifier column
-        print("\nPlease select the column that uniquely identifies rows (e.g., ROW_ID):")
-        for i, col in enumerate(columns):
-            print(f"{i+1}. {col}")
-
-        while True:
-            try:
-                choice = int(input("Enter the number of the identifier column: ")) - 1
-                if 0 <= choice < len(columns):
-                    row_id_col = columns[choice]
-                    print(f"Using '{row_id_col}' as the row identifier.")
-                    break
-                else:
-                    print("Invalid choice. Please enter a number from the list.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
 
         # 2. Query for unique, non-null values
         try:
@@ -211,17 +153,18 @@ class UncontrolledVocabNormalizationWorkflow:
             print("\nAgent did not propose any valid normalizations. Exiting workflow.")
             return
 
-        # 4. Review proposed changes with the user
-        print("\n--- Proposed Normalizations ---")
+        # 4. Review proposed changes individually with the user
+        print("\n--- Reviewing Proposed Normalizations ---")
+        approved_corrections = {}
+        
         for original, corrected in final_corrections.items():
-            print(f"- Change '{original}' to '{corrected}'")
+            self._review_proposed_normalization(column_name, original, corrected, approved_corrections)
 
-        approval = input("\nDo you approve this plan? (yes/no): ").lower()
-        if approval not in ['y', 'yes']:
-            print("\nPlan rejected. No changes were made.")
+        if not approved_corrections:
+            print("\nNo normalizations were approved. Exiting workflow.")
             return
 
-        print("Executing the approved normalization plan...")
+        print(f"\nExecuting the approved normalization plan with {len(approved_corrections)} changes...")
 
         # Following Synapse documentation pattern for updating table data
         # We already have the data in all_data_df from the earlier query
@@ -230,18 +173,26 @@ class UncontrolledVocabNormalizationWorkflow:
         # Make a copy for updates
         update_df = all_data_df.copy()
         
-        # Apply corrections by string replacement
-        for old_value, new_value in final_corrections.items():
-            # Convert to string, apply replacement, handle NaN values
-            update_df[actual_column_name] = update_df[actual_column_name].astype(str).str.replace(old_value, new_value, regex=False)
-            # Convert 'nan' strings back to actual NaN
-            update_df[actual_column_name] = update_df[actual_column_name].replace('nan', pd.NA)
+        # Apply corrections using JSON-aware replacement
+        try:
+            update_df[actual_column_name] = update_df[actual_column_name].apply(
+                lambda x: self._apply_corrections_to_cell(x, approved_corrections)
+            )
+        except Exception as e:
+            print(f"Error applying corrections: {e}")
+            return
         
         # Find rows that actually changed by comparing string representations
-        original_str = all_data_df[actual_column_name].astype(str)
-        updated_str = update_df[actual_column_name].astype(str)
-        changed_mask = original_str != updated_str
-        changed_rows = changed_mask.sum()
+        try:
+            original_str = all_data_df[actual_column_name].astype(str)
+            updated_str = update_df[actual_column_name].astype(str)
+            changed_mask = original_str != updated_str
+            changed_rows = changed_mask.sum()
+        except Exception as e:
+            print(f"Error comparing values: {e}")
+            # Fallback: assume all rows changed
+            changed_mask = pd.Series([True] * len(update_df))
+            changed_rows = len(update_df)
         
         if changed_rows == 0:
             print("No changes to apply after normalization.")
@@ -256,72 +207,85 @@ class UncontrolledVocabNormalizationWorkflow:
         changed_df = update_df[changed_mask].copy()
         print(f"Preparing to update {len(changed_df)} rows (out of {len(update_df)} total rows)")
         
-        table = Table(self.view_synapse_id, changed_df)
-        updated_table = self.syn.store(table)
-        print("Table updated successfully!")
+        # Use synapse_agent to handle the table update
+        print(f"Using Synapse agent to update {len(changed_df)} rows...")
+        
+        # The synapse_agent will handle proper column selection and etag management
+        update_result = self.synapse_agent.tools[1]._run(  # UpdateTableTool
+            table_id=self.view_synapse_id,
+            updates_df=changed_df
+        )
+        print(f"Synapse agent result: {update_result}")
 
         # Ask user if they want to propagate changes to other sources
-        self.follow_up_tasks = []
         propagate_prompt = "\nDo you want to create a GitHub issue with these normalizations? (yes/no): "
         propagate = input(propagate_prompt).lower()
         if propagate in ['y', 'yes']:
             source = input("Please specify the data source (e.g., GitHub repository URL): ")
             if "github.com" in source:
-                corrections_with_ids = []
-                print("Gathering identifiers for the GitHub issue...")
-                
-                # Ask user for the identifier column
-                all_cols = [c['name'] for c in self.syn.getColumns(self.view_synapse_id)]
-                print("\nPlease select a column to include in the issue for context (e.g., studyId):")
-                for i, col in enumerate(all_cols):
-                    print(f"{i+1}. {col}")
-                
-                issue_id_col_name = None
-                while True:
-                    try:
-                        choice = int(input("Enter the number of the identifier column: ")) - 1
-                        if 0 <= choice < len(all_cols):
-                            issue_id_col_name = all_cols[choice]
-                            break
-                        else:
-                            print("Invalid choice. Please enter a number from the list.")
-                    except ValueError:
-                        print("Invalid input. Please enter a number.")
-                
-                # The data is already in all_data_df, no need to re-query
-                # We just need to add the identifier column if it's not already there.
-                actual_issue_id_col = next((c for c in all_data_df.columns if c.lower() == issue_id_col_name.lower()), None)
-                if not actual_issue_id_col:
-                    print(f"Warning: Could not find identifier column '{issue_id_col_name}' in the data. Re-querying to include it.")
-                    try:
-                        query = f'SELECT "{row_id_col}", "{column_name}", "{issue_id_col_name}" FROM {self.view_synapse_id} WHERE "{column_name}" IS NOT NULL'
-                        all_data_df = self.syn.tableQuery(query, resultsAs="csv").asDataFrame()
-                        actual_issue_id_col = next((c for c in all_data_df.columns if c.lower() == issue_id_col_name.lower()), None)
-                    except Exception as e:
-                        print(f"Error re-querying data: {e}. Cannot create GitHub issue.")
-                        actual_issue_id_col = None
+                try:
+                    # Initialize the GitHub issue filer agent
+                    github_agent = GitHubIssueFilerAgent()
+                    
+                    print("Gathering identifiers for the GitHub issue...")
+                    
+                    # Ask user for the identifier column
+                    all_cols = [c['name'] for c in self.syn.getColumns(self.view_synapse_id)]
+                    print("\nPlease select a column to include in the issue for context (e.g., studyId):")
+                    for i, col in enumerate(all_cols):
+                        print(f"{i+1}. {col}")
+                    
+                    issue_id_col_name = None
+                    while True:
+                        try:
+                            choice = int(input("Enter the number of the identifier column: ")) - 1
+                            if 0 <= choice < len(all_cols):
+                                issue_id_col_name = all_cols[choice]
+                                break
+                            else:
+                                print("Invalid choice. Please enter a number from the list.")
+                        except ValueError:
+                            print("Invalid input. Please enter a number.")
+                    
+                    # The data is already in all_data_df, no need to re-query
+                    # We just need to add the identifier column if it's not already there.
+                    actual_issue_id_col = next((c for c in all_data_df.columns if c.lower() == issue_id_col_name.lower()), None)
+                    if not actual_issue_id_col:
+                        print(f"Warning: Could not find identifier column '{issue_id_col_name}' in the data. Re-querying to include it.")
+                        try:
+                            query = f'SELECT "{row_id_col}", "{column_name}", "{issue_id_col_name}" FROM {self.view_synapse_id} WHERE "{column_name}" IS NOT NULL'
+                            all_data_df = self.syn.tableQuery(query, resultsAs="csv").asDataFrame()
+                            actual_issue_id_col = next((c for c in all_data_df.columns if c.lower() == issue_id_col_name.lower()), None)
+                        except Exception as e:
+                            print(f"Error re-querying data: {e}. Cannot create GitHub issue.")
+                            actual_issue_id_col = None
 
-                if actual_issue_id_col:
-                    for original, corrected in final_corrections.items():
-                        # Find all study IDs associated with the original (uncorrected) term
-                        mask = all_data_df[actual_column_name].apply(lambda x: original in x if isinstance(x, list) else original == x)
-                        matching_rows = all_data_df[mask]
-                        ids = matching_rows[actual_issue_id_col].unique().tolist()
-                        corrections_with_ids.append({
-                            "original": original,
-                            "corrected": corrected,
-                            "study_ids": ids,
-                            "column_name": column_name
-                        })
+                    if actual_issue_id_col:
+                        corrections_with_ids = []
+                        for original, corrected in approved_corrections.items():
+                            # Find all study IDs associated with the original (uncorrected) term
+                            mask = all_data_df[actual_column_name].apply(lambda x: original in x if isinstance(x, list) else original == x)
+                            matching_rows = all_data_df[mask]
+                            ids = matching_rows[actual_issue_id_col].unique().tolist()
+                            corrections_with_ids.append({
+                                "original": original,
+                                "corrected": corrected,
+                                "study_ids": ids,
+                                "column_name": column_name
+                            })
+                        
+                        if corrections_with_ids:
+                            title = f"Vocabulary Normalizations for column '{column_name}'"
+                            body = self._create_github_issue_body(corrections_with_ids, column_name)
+                            issue_url = github_agent.file_issue(title, body, source)
+                            if issue_url:
+                                print(f"✅ Created GitHub issue for vocabulary normalizations: {issue_url}")
                 
-                if corrections_with_ids:
-                    self.follow_up_tasks.append({
-                        'type': 'github_issue',
-                        'repo_url': source,
-                        'corrections': corrections_with_ids
-                    })
+                except Exception as e:
+                    print(f"❌ Error creating GitHub issue: {e}")
+                    print("You may need to check your GitHub CLI authentication or repository access.")
 
-        return self.follow_up_tasks
+        return []
 
     def _standardize_cell_value_to_list(self, cell_value):
         """Helper to consistently handle single values, lists, and string-encoded lists."""
@@ -358,6 +322,115 @@ class UncontrolledVocabNormalizationWorkflow:
         else:
             return None, None
 
+    def _review_proposed_normalization(self, column_name, original, corrected, approved_corrections):
+        """
+        Reviews a single proposed normalization with the user.
+        Provides options to accept, reject, provide different value, or consult ontology expert.
+        """
+        while True:
+            print(f"\nAgent suggests changing '{original}' to '{corrected}'")
+            
+            prompt = "Accept (a), provide different value (d), ask ontology expert (o), or reject (r)? "
+            action = input(prompt).lower().strip()
+
+            if action == 'a':
+                approved_corrections[original] = corrected
+                print(f"    Accepted: '{original}' → '{corrected}'")
+                break
+            elif action == 'r':
+                print(f"    Rejected suggestion for '{original}'.")
+                break
+            elif action == 'd':
+                new_val_manual = input(f"    Enter the correct value for '{original}': ").strip()
+                if new_val_manual:
+                    approved_corrections[original] = new_val_manual
+                    print(f"    Will correct '{original}' to '{new_val_manual}'.")
+                else:
+                    print("    No value provided, skipping.")
+                break
+            elif action == 'o':
+                suggestion = self._get_expert_suggestion(column_name, original)
+                if suggestion:
+                    print(f"    🎓 Expert suggests: '{suggestion['new_value']}' (URI: {suggestion.get('uri', 'N/A')})")
+                    if input("    Accept expert's suggestion? (y/n): ").lower() == 'y':
+                        approved_corrections[original] = suggestion['new_value']
+                        print(f"    Accepted: '{original}' → '{suggestion['new_value']}'")
+                else:
+                    print("    Expert could not provide a suggestion.")
+                break
+            else:
+                print("    Invalid action. Please enter 'a', 'd', 'o', or 'r'.")
+
+    def _get_expert_suggestion(self, column_name, value):
+        """Gets a suggestion from the ontology expert."""
+        if not self.orchestrator:
+            print("    Error: Orchestrator not available for expert consultation.")
+            return None
+        
+        suggestion = self.orchestrator._consult_ontology_expert(column_name, value)
+        return suggestion
+
+    def _apply_corrections_to_cell(self, cell_value, corrections):
+        """
+        Apply corrections to a cell value, handling strings, lists, and JSON arrays.
+        
+        Args:
+            cell_value: The original cell value (could be string, list, or JSON string)
+            corrections: Dictionary of {original: corrected} values
+            
+        Returns:
+            The corrected cell value in the same format as the input
+        """
+        try:
+            # Handle NaN/None values
+            if pd.isna(cell_value) or cell_value is None:
+                return cell_value
+            
+            # Handle actual Python lists directly
+            if isinstance(cell_value, list):
+                corrected_list = []
+                for item in cell_value:
+                    item_str = str(item).strip()
+                    corrected_item = corrections.get(item_str, item_str)
+                    corrected_list.append(corrected_item)
+                return corrected_list
+            
+            # Convert to string for further processing
+            cell_str = str(cell_value)
+            
+            # Handle the special case of 'nan' string
+            if cell_str == 'nan':
+                return pd.NA
+                
+            # Try to parse as JSON array
+            try:
+                parsed_list = json.loads(cell_str)
+                if isinstance(parsed_list, list):
+                    # Apply corrections to each item in the list
+                    corrected_list = []
+                    for item in parsed_list:
+                        item_str = str(item).strip()
+                        corrected_item = corrections.get(item_str, item_str)
+                        corrected_list.append(corrected_item)
+                    
+                    # Return as JSON string (same format as input)
+                    return json.dumps(corrected_list)
+                    
+            except (json.JSONDecodeError, TypeError):
+                # Not a JSON array, treat as simple string
+                pass
+            
+            # Handle as simple string - apply corrections
+            cell_str_stripped = cell_str.strip()
+            if cell_str_stripped in corrections:
+                return corrections[cell_str_stripped]
+            else:
+                return cell_value  # Return original if no correction needed
+                    
+        except Exception as e:
+            # Silent fallback - return original value without warning
+            return cell_value
+
     def run_for_specific_column(self, view_name, view_id, column_name, row_id_col, user_rules=""):
         """
         Run vocabulary normalization for a specific column and table.
@@ -387,6 +460,9 @@ class UncontrolledVocabNormalizationWorkflow:
             query_results = self.syn.tableQuery(query, resultsAs="csv", includeRowIdAndRowVersion=True)
             all_data_df = query_results.asDataFrame()
             original_etag = query_results.etag
+            
+            print(f"Queried DataFrame columns: {list(all_data_df.columns)}")
+            print(f"DataFrame shape: {all_data_df.shape}")
 
             # Find actual column names in the dataframe
             actual_row_id_col = next((c for c in all_data_df.columns if c.lower() == row_id_col.lower()), None)
@@ -448,32 +524,43 @@ class UncontrolledVocabNormalizationWorkflow:
             print("\nAgent did not propose any valid normalizations.")
             return []
 
-        # Review proposed changes with the user
-        print("\n--- Proposed Normalizations ---")
+        # Review proposed changes individually with the user
+        print("\n--- Reviewing Proposed Normalizations ---")
+        approved_corrections = {}
+        
         for original, corrected in final_corrections.items():
-            print(f"  - Change '{original}' to '{corrected}'")
+            self._review_proposed_normalization(column_name, original, corrected, approved_corrections)
 
-        approval = input("\nDo you approve this plan? (yes/no): ").lower()
-        if approval not in ['y', 'yes']:
-            print("\nPlan rejected. No changes were made.")
+        if not approved_corrections:
+            print("\nNo normalizations were approved.")
             return []
 
-        print("Executing the approved normalization plan...")
+        print(f"\nExecuting the approved normalization plan with {len(approved_corrections)} changes...")
         
         # Apply corrections using the same logic as the main workflow
         # Make a copy for updates
         update_df = all_data_df.copy()
         
-        # Apply corrections by string replacement
-        for old_value, new_value in final_corrections.items():
-            update_df[actual_column_name] = update_df[actual_column_name].astype(str).str.replace(old_value, new_value, regex=False)
-            update_df[actual_column_name] = update_df[actual_column_name].replace('nan', pd.NA)
+        # Apply corrections using JSON-aware replacement
+        try:
+            update_df[actual_column_name] = update_df[actual_column_name].apply(
+                lambda x: self._apply_corrections_to_cell(x, approved_corrections)
+            )
+        except Exception as e:
+            print(f"Error applying corrections: {e}")
+            return []
         
         # Find rows that actually changed
-        original_str = all_data_df[actual_column_name].astype(str)
-        updated_str = update_df[actual_column_name].astype(str)
-        changed_mask = original_str != updated_str
-        changed_rows = changed_mask.sum()
+        try:
+            original_str = all_data_df[actual_column_name].astype(str)
+            updated_str = update_df[actual_column_name].astype(str)
+            changed_mask = original_str != updated_str
+            changed_rows = changed_mask.sum()
+        except Exception as e:
+            print(f"Error comparing values: {e}")
+            # Fallback: assume all rows changed
+            changed_mask = pd.Series([True] * len(update_df))
+            changed_rows = len(update_df)
         
         if changed_rows == 0:
             print("No changes to apply after normalization.")
@@ -488,9 +575,33 @@ class UncontrolledVocabNormalizationWorkflow:
         changed_df = update_df[changed_mask].copy()
         print(f"Preparing to update {len(changed_df)} rows (out of {len(update_df)} total rows)")
         
-        table = Table(self.view_synapse_id, changed_df)
-        updated_table = self.syn.store(table)
-        print("Table updated successfully!")
+        # Use synapse_agent to handle the table update
+        print(f"Using Synapse agent to update {len(changed_df)} rows...")
+        
+        # The synapse_agent will handle proper column selection and etag management
+        update_result = self.synapse_agent.tools[1]._run(  # UpdateTableTool
+            table_id=self.view_synapse_id,
+            updates_df=changed_df
+        )
+        print(f"Synapse agent result: {update_result}")
         
         print(f"\nCompleted normalization for column '{column_name}' in {view_name}.")
         return []  # Could add follow-up tasks here if needed
+
+    def _create_github_issue_body(self, corrections_with_ids, column_name):
+        """Create a formatted body for the GitHub issue."""
+        body_lines = [
+            f"## Vocabulary Normalizations for Column: {column_name}",
+            "",
+            f"The following normalizations were applied to the `{column_name}` column:",
+            ""
+        ]
+        
+        for correction in corrections_with_ids:
+            body_lines.append(f"**Original:** {correction['original']}")
+            body_lines.append(f"**Normalized:** {correction['corrected']}")
+            if correction.get('study_ids'):
+                body_lines.append(f"**Study IDs:** {', '.join(correction['study_ids'])}")
+            body_lines.append("")
+        
+        return "\n".join(body_lines)
