@@ -63,3 +63,19 @@ python src/main.py
 ```
 
 The application will start, and you can select the "Correct Synapse Annotations" task from the menu to begin the workflow. 
+
+- Python 3.10+
+- Flask
+- pandas (1.3.0 - 1.5.x)
+- numpy
+- difflib (standard library)
+
+## Limitations
+
+- Large files (>100MB) may be slow to process in the browser
+- Complex validation rules beyond simple value matching are not supported
+- The application does not validate relationship constraints or cross-field validations
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
