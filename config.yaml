@@ -1,0 +1,28 @@
+# Configuration for the Synapse Curation and Management Agentic System
+#
+# Store credentials and other configuration values here.
+# For example:
+# synapse:
+#   username: "your_username"
+#   api_key: "your_api_key" 
+
+llm:
+  # model should be in the format 'provider/model_name'
+  model: "openrouter/google/gemini-2.5-flash"
+
+  # API keys and other provider-specific settings.
+  # These will be set as environment variables for crewai to use.
+  # For openrouter, use "https://openrouter.ai/api/v1" for OPENAI_API_BASE
+  # and your OpenRouter key for OPENAI_API_KEY.
+  credentials:
+    OPENAI_API_BASE: "https://openrouter.ai/api/v1"
+
+annotation_corrector:
+  data_model_url: https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld
+  views:
+    main_fileview: "syn16858331"
+    study_long_text: "syn16787123"
+    portal_initiatives: "syn24189696"
+    portal_studies_view_staging: "syn52677631"
+    ar_bypasses_in_nf_data_portal: "syn68414165"
+    portal_publications: "syn16857542"

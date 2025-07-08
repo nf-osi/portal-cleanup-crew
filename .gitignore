@@ -35,3 +35,6 @@ instance/
 # Environment variables
 .env
 .env.*
+
+# misc
+creds.yaml
