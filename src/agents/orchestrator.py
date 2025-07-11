@@ -2,29 +2,46 @@ from crewai import Agent, Crew, Process, Task
 import yaml
 from .uncontrolled_vocab_normalizer import get_uncontrolled_vocab_normalizer_agent
 from .freetext_corrector import get_freetext_corrector_agent
-from src.utils.llm_utils import get_llm
+from .link_external_data import get_link_external_data_agent
+from .sync_external_metadata import get_sync_external_metadata_agent
+from ..utils.llm_utils import get_llm
 import os
 import synapseclient
 import json
-from src.workflows.correction import CorrectionWorkflow
-from src.workflows.freetext_correction import FreetextCorrectionWorkflow
-from src.workflows.uncontrolled_vocab_normalization import UncontrolledVocabNormalizationWorkflow
+from ..workflows.correction import CorrectionWorkflow
+from ..workflows.freetext_correction import FreetextCorrectionWorkflow
+from ..workflows.uncontrolled_vocab_normalization import UncontrolledVocabNormalizationWorkflow
+
 from .github_issue_filer import GitHubIssueFilerAgent
+from .ontology_expert import OntologyExpert
 import getpass
-from src.tools.jsonld_tools import JsonLdGetValidValuesTool
+from ..tools.jsonld_tools import JsonLdGetValidValuesTool
+import subprocess
+import re
+from ..utils.synapse_utils import (update_table_column_with_corrections, 
+                                 get_synapse_table_as_df, 
+                                 build_synapse_table)
 
 class OrchestratorAgent:
-    def __init__(self, ac_config):
-        self.ac_config = ac_config
-        self.data_model_path = ac_config.get('data_model_url')
-        self.views = ac_config.get('views', {})
-        self.llm = get_llm()
+    def __init__(self, config):
+        self.config = config
+        self.llm_config = config.get('llm', {})
+        self.ac_config = config.get('annotation_corrector', {})
+        self.fc_config = config.get('freetext_correction', {})
+        self.oe_config = config.get('ontology_expert', {})
+        
+        self.data_model_path = self.ac_config.get('data_model_url')
+        self.views = self.config.get('views', {})
+        self.llm = get_llm(config=self.llm_config)
         self.syn = self._login_to_synapse()
         
         self.agents = {
-            "uncontrolled_vocab_normalizer": get_uncontrolled_vocab_normalizer_agent(llm=self.llm),
-            "freetext_corrector": get_freetext_corrector_agent(llm=self.llm),
-            "github_issue_filer": GitHubIssueFilerAgent
+            "uncontrolled_vocab_normalizer": get_uncontrolled_vocab_normalizer_agent(llm=get_llm('uncontrolled_vocab_normalizer', self.llm_config)),
+            "freetext_corrector": get_freetext_corrector_agent(llm=get_llm('freetext_corrector', self.llm_config)),
+            "github_issue_filer": GitHubIssueFilerAgent(),
+            "ontology_expert": OntologyExpert(llm=get_llm('ontology_expert', self.llm_config)),
+            "link_external_data": get_link_external_data_agent(syn=self.syn),
+            "sync_external_metadata": get_sync_external_metadata_agent(syn=self.syn)
         }
 
     def _login_to_synapse(self):
@@ -49,29 +66,14 @@ class OrchestratorAgent:
                 print(f"\nError logging in to Synapse: {e}")
                 return None
 
-    def run(self):
+    def run(self, mode=None):
         if not self.syn:
             print("Synapse login failed. Exiting.")
             return
 
         print("\nWelcome to the Synapse Data Curation Assistant.")
-        while True:
-            print("\nPlease select a mode:")
-            print("1. Manual Mode - Select specific tasks and tables")
-            print("2. Semi-Autonomous Mode - Automatically process all configured tables")
-            print("3. Exit")
-            
-            mode_choice = input("Enter the number of your choice: ")
-            
-            if mode_choice == '1':
-                self._run_manual_mode()
-            elif mode_choice == '2':
-                self._run_semi_autonomous_mode()
-            elif mode_choice == '3':
-                print("Exiting the assistant. Goodbye!")
-                break
-            else:
-                print("Invalid choice. Please enter a number from 1 to 3.")
+        self._run_manual_mode()
+
 
     def _run_manual_mode(self):
         """Run the original manual mode where user selects each task"""
@@ -80,474 +82,507 @@ class OrchestratorAgent:
             print("1. Correct Synapse Annotations based on data model")
             print("2. Standardize Uncontrolled Terms (e.g., investigator names)")
             print("3. Correct Free-Text Fields")
-            print("4. Back to main menu")
-            
-            choice = input("Enter the number of your choice: ")
+            print("4. Link External Dataset to Synapse (PRIDE, GEO, SRA, ENA, etc.)")
+            print("5. Sync External Metadata to Synapse Annotations")
+            print("6. Exit")
 
+            choice = input("Enter the number of your choice: ")
             if choice == '1':
                 self._run_annotation_correction_manual()
             elif choice == '2':
-                self._run_vocab_normalization_manual()
+                self._run_uncontrolled_vocab_normalization_manual()
             elif choice == '3':
                 self._run_freetext_correction_manual()
             elif choice == '4':
+                self._run_link_external_data_manual()
+            elif choice == '5':
+                self._run_sync_external_metadata_manual()
+            elif choice == '6':
                 break
             else:
-                print("Invalid choice. Please enter a number from 1 to 4.")
+                print("Invalid choice. Please enter a number from 1 to 6.")
 
-    def _run_semi_autonomous_mode(self):
-        """Run semi-autonomous mode that processes all tables automatically"""
-        print("\n=== Semi-Autonomous Mode ===")
-        print("The system will work independently and only check in with you when:")
-        print("- It needs help with ambiguous/unmappable values")
-        print("- It's ready to apply a batch of changes")
-        print("- It encounters errors it can't resolve")
-        
+    def _run_annotation_correction_manual(self):
+        """
+        Manually runs the annotation correction workflow.
+        The user selects a table, and the workflow runs on it.
+        """
+        # Let user select a table
         if not self.views:
             print("No views configured in config.yaml. Cannot proceed.")
             return
             
-        print(f"\nFound {len(self.views)} configured tables:")
-        for view_name, view_id in self.views.items():
-            print(f"  - {view_name} ({view_id})")
-        
-        # Ask which workflows to run
-        print("\nSelect which workflows to run:")
-        run_annotation_correction = input("1. Run annotation correction? (yes/no): ").lower() in ['y', 'yes']
-        run_vocab_normalization = input("2. Run vocabulary normalization? (yes/no): ").lower() in ['y', 'yes']
-        
-        if not run_annotation_correction and not run_vocab_normalization:
-            print("No workflows selected. Returning to main menu.")
-            return
-            
-        # Set confidence thresholds for autonomous decisions
-        print("\nSetting autonomous decision-making parameters...")
-        confidence_threshold = 0.8  # Auto-accept corrections with high confidence
-        auto_reject_threshold = 0.3  # Auto-reject corrections with very low confidence
-        
-        all_changes = []  # Collect all changes across tables
-        
-        # Process each table
-        for view_name, view_id in self.views.items():
-            print(f"\n🤖 Processing table: {view_name} ({view_id})")
-            print('='*60)
-            
-            table_changes = []
-            
-            if run_annotation_correction:
-                print(f"\n🔍 Running autonomous annotation correction for {view_name}...")
-                annotation_changes = self._run_autonomous_annotation_correction(view_name, view_id)
-                table_changes.extend(annotation_changes)
-                
-            if run_vocab_normalization:
-                print(f"\n🔍 Running autonomous vocabulary normalization for {view_name}...")
-                vocab_changes = self._run_vocab_normalization_fully_autonomous(view_name, view_id)
-                table_changes.extend(vocab_changes)
-            
-            if table_changes:
-                all_changes.extend(table_changes)
-                print(f"\n✅ Completed {view_name}: {len(table_changes)} changes queued")
-            else:
-                print(f"\n✅ Completed {view_name}: No changes needed")
-        
-        # Present final batch for approval
-        if all_changes:
-            self._present_final_batch_for_approval(all_changes)
-        else:
-            print("\n🎉 Semi-autonomous processing complete! No changes were needed across all tables.")
-        
-        print("\n=== Semi-Autonomous Mode Complete ===")
-
-    def _run_autonomous_annotation_correction(self, view_name, view_id):
-        """Run annotation correction autonomously for all columns in a table"""
-        print(f"\n🔍 Autonomous annotation correction for {view_name}...")
-        
-        # Get all columns from the table/view
-        try:
-            entity = self.syn.get(view_id)
-            columns = [c['name'] for c in self.syn.getColumns(entity)]
-            print(f"  Found {len(columns)} columns to check")
-        except Exception as e:
-            print(f"  ❌ Error getting columns: {e}")
-            return
-        
-        # Track corrections across all columns
-        all_corrections = {}
-        columns_with_issues = 0
-        columns_processed = 0
-        
-        for i, column_name in enumerate(columns, 1):
-            print(f"  [{i}/{len(columns)}] Checking '{column_name}'...", end=" ")
-            
-            # Check if this column exists in the data model before proceeding
-            try:
-                jsonld_tool = JsonLdGetValidValuesTool()
-                data_model_values = jsonld_tool._run(self.data_model_path, column_name)
-                
-                if "not found in the data model" in str(data_model_values) or "No valid values" in str(data_model_values):
-                    print("⏭️  Not in data model (skipped)")
-                    continue
-                    
-            except Exception as e:
-                print(f"⚠️  Error checking data model: {e}")
-                continue
-            
-            columns_processed += 1
-            
-            # Get correction plan for this column
-            workflow = CorrectionWorkflow(
-                syn=self.syn,
-                llm=self.llm,
-                view_synapse_id=view_id,
-                data_model_path=self.data_model_path
-            )
-            
-            correction_plan = workflow._get_column_correction_plan(column_name)
-            
-            if correction_plan and (correction_plan.get('corrections') or correction_plan.get('unmappable')):
-                corrections = correction_plan.get('corrections', [])
-                unmappable = correction_plan.get('unmappable', [])
-                
-                # Apply autonomous decision making
-                if corrections:
-                    approved_corrections = []
-                    for correction in corrections:
-                        # Use the confidence score provided by the LLM agent
-                        confidence = correction.get('confidence', 0.5)  # Default to medium confidence if not provided
-                        
-                        if confidence >= 0.8:  # High confidence - auto-approve
-                            approved_corrections.append(correction)
-                            print(f"      ✅ Auto-approved: '{correction['current_value']}' → '{correction['new_value']}' (confidence: {confidence:.2f})")
-                        elif confidence >= 0.6:  # Medium confidence - auto-approve with note
-                            approved_corrections.append(correction)
-                            print(f"      ⚠️  Auto-approved: '{correction['current_value']}' → '{correction['new_value']}' (confidence: {confidence:.2f})")
-                        else:  # Low confidence - skip in autonomous mode, would need user review
-                            print(f"      ❌ Skipped: '{correction['current_value']}' → '{correction['new_value']}' (confidence: {confidence:.2f} too low)")
-                    
-                    if approved_corrections:
-                        all_corrections[column_name] = approved_corrections
-                        columns_with_issues += 1
-                        print(f"✅ {len(approved_corrections)} auto-approved")
-                    else:
-                        print("⚠️  All corrections had low confidence (skipped)")
-                else:
-                    print("✅ No issues")
-            else:
-                print("✅ No issues")
-        
-        # Summary
-        print(f"\n📊 Summary: Processed {columns_processed} columns, found issues in {columns_with_issues}")
-        
-        # Apply all corrections if any were found
-        if all_corrections:
-            print(f"\n🤖 Applying corrections automatically...")
-            workflow = CorrectionWorkflow(
-                syn=self.syn,
-                llm=self.llm,
-                view_synapse_id=view_id,
-                data_model_path=self.data_model_path
-            )
-            
-            success = workflow.apply_annotation_corrections(all_corrections)
-            if success:
-                print(f"✅ Successfully applied corrections to {view_name}")
-            else:
-                print(f"❌ Failed to apply corrections to {view_name}")
-        else:
-            print(f"✅ No corrections needed for {view_name}")
-
-    def _run_vocab_normalization_fully_autonomous(self, view_name, view_id):
-        """Run vocabulary normalization with full autonomy - pick columns automatically"""
-        print(f"🤖 Autonomously analyzing vocabulary in {view_name}...")
-        
-        try:
-            view = self.syn.get(view_id)
-            columns = [c['name'] for c in self.syn.getColumns(view)]
-            
-            # Automatically identify columns that likely need normalization
-            target_columns = self._identify_normalization_candidates(columns, view_id)
-            
-            if not target_columns:
-                print("  📊 No columns identified as normalization candidates")
-                return []
-            
-            print(f"  📊 Auto-selected {len(target_columns)} columns for normalization: {', '.join(target_columns)}")
-            
-            all_changes = []
-            
-            for column_name in target_columns:
-                print(f"    🔧 Normalizing '{column_name}'...", end=" ")
-                
-                try:
-                    changes = self._run_single_column_normalization_autonomous(view_name, view_id, column_name)
-                    if changes:
-                        all_changes.extend(changes)
-                        print(f"✅ {len(changes)} normalizations")
-                    else:
-                        print("✅ No changes needed")
-                        
-                except Exception as e:
-                    print(f"⚠️ Error: {str(e)[:30]}...")
-                    continue
-            
-            return all_changes
-            
-        except Exception as e:
-            print(f"❌ Error processing vocabulary for {view_name}: {e}")
-            return []
-
-    def _identify_normalization_candidates(self, columns, view_id):
-        """Automatically identify columns that likely need vocabulary normalization"""
-        candidates = []
-        
-        # Look for columns with names that typically contain free-text entries
-        text_column_patterns = [
-            'author', 'contributor', 'investigator', 'name', 'title', 
-            'description', 'keyword', 'tag', 'category', 'type'
-        ]
-        
-        for column in columns:
-            column_lower = column.lower()
-            
-            # Skip clearly structured columns
-            if any(skip in column_lower for skip in ['id', 'date', 'time', 'url', 'path', 'size', 'count']):
-                continue
-                
-            # Include columns likely to have normalization opportunities
-            if any(pattern in column_lower for pattern in text_column_patterns):
-                candidates.append(column)
-                continue
-                
-            # Check if column has reasonable diversity for normalization
-            try:
-                query = f'SELECT COUNT(DISTINCT "{column}") as unique_count, COUNT(*) as total_count FROM {view_id} WHERE "{column}" IS NOT NULL LIMIT 1'
-                result = self.syn.tableQuery(query).asDataFrame()
-                
-                if len(result) > 0:
-                    unique_count = result['unique_count'].iloc[0]
-                    total_count = result['total_count'].iloc[0]
-                    
-                    # Good normalization candidate: many values but not too many
-                    if 2 <= unique_count <= min(100, total_count * 0.5):
-                        candidates.append(column)
-                        
-            except Exception:
-                # If we can't analyze, skip this column
-                continue
-        
-        return candidates[:5]  # Limit to 5 columns to avoid overwhelming
-
-    def _run_single_column_normalization_autonomous(self, view_name, view_id, column_name):
-        """Run normalization for a single column with autonomous decisions"""
-        workflow = UncontrolledVocabNormalizationWorkflow(
-            syn=self.syn,
-            llm=self.llm,
-            views={view_name: view_id}
-        )
-        
-        # Find row identifier automatically
-        try:
-            view = self.syn.get(view_id)
-            columns = [c['name'] for c in self.syn.getColumns(view)]
-            
-            row_id_col = None
-            for col in columns:
-                if col.lower() in ['row_id', 'rowid', 'id', 'uid', 'unique_id']:
-                    row_id_col = col
-                    break
-            
-            if not row_id_col:
-                # Default to first column that looks like an ID
-                for col in columns:
-                    if 'id' in col.lower():
-                        row_id_col = col
-                        break
-                
-            if not row_id_col:
-                return []  # Can't proceed without row identifier
-            
-            # Run normalization with default rules
-            follow_up_tasks = workflow.run_for_specific_column(
-                view_name, view_id, column_name, row_id_col, 
-                user_rules=""  # Use default normalization rules
-            )
-            
-            return [{'table': view_name, 'column': column_name, 'type': 'vocabulary_normalization'}]
-            
-        except Exception as e:
-            return []
-
-    def _present_final_batch_for_approval(self, all_changes):
-        """Present all accumulated changes for final approval"""
-        print(f"\n🎯 FINAL REVIEW: Ready to apply {len(all_changes)} change batches")
-        print("="*60)
-        
-        total_corrections = 0
-        for change_batch in all_changes:
-            table_name = change_batch['table']
-            change_type = change_batch['type']
-            
-            if change_type == 'annotation':
-                corrections = change_batch['corrections']
-                total_corrections += len(corrections)
-                
-                print(f"\n📋 {table_name} - Annotation corrections ({len(corrections)} changes):")
-                for correction in corrections[:3]:  # Show first 3
-                    print(f"    '{correction['current_value']}' → '{correction['new_value']}' ({correction['reason']})")
-                if len(corrections) > 3:
-                    print(f"    ... and {len(corrections) - 3} more corrections")
-                    
-            elif change_type == 'vocabulary_normalization':
-                print(f"\n📋 {table_name} - Vocabulary normalization in column '{change_batch['column']}'")
-                total_corrections += 1
-        
-        print(f"\n🎯 TOTAL: {total_corrections} corrections across {len(all_changes)} operations")
-        
-        while True:
-            approval = input("\n🚀 Apply all changes? (yes/no/details): ").lower()
-            
-            if approval in ['y', 'yes']:
-                print("\n🚀 Applying all changes...")
-                self._apply_all_changes(all_changes)
-                break
-            elif approval in ['n', 'no']:
-                print("\n❌ Changes cancelled. No modifications made.")
-                break
-            elif approval == 'details':
-                self._show_detailed_changes(all_changes)
-            else:
-                print("Please enter 'yes', 'no', or 'details'")
-
-    def _apply_all_changes(self, all_changes):
-        """Apply all the accumulated changes"""
-        print("\n🔧 Applying changes...")
-        
-        for i, change_batch in enumerate(all_changes, 1):
-            table_name = change_batch['table']
-            print(f"  [{i}/{len(all_changes)}] Applying changes to {table_name}...", end=" ")
-            
-            try:
-                if change_batch['type'] == 'annotation':
-                    # Apply annotation corrections using the correction workflow
-                    view_id = self.views[table_name]
-                    workflow = CorrectionWorkflow(
-                        syn=self.syn,
-                        llm=self.llm,
-                        view_synapse_id=view_id,
-                        data_model_path=self.data_model_path
-                    )
-                    
-                    # Group corrections by column
-                    corrections_by_column = {}
-                    for correction in change_batch['corrections']:
-                        col_name = correction['column']
-                        if col_name not in corrections_by_column:
-                            corrections_by_column[col_name] = []
-                        corrections_by_column[col_name].append(correction)
-                    
-                    success = workflow.apply_annotation_corrections(corrections_by_column)
-                    if not success:
-                        print("❌ Failed to apply corrections")
-                        continue
-                        
-                elif change_batch['type'] == 'vocabulary_normalization':
-                    # Vocabulary changes were already applied during processing
-                    pass
-                
-                print("✅")
-                
-            except Exception as e:
-                print(f"❌ Error: {e}")
-        
-        print("\n🎉 All changes applied successfully!")
-
-    def _show_detailed_changes(self, all_changes):
-        """Show detailed breakdown of all changes"""
-        print("\n📋 DETAILED CHANGE BREAKDOWN")
-        print("="*60)
-        
-        for change_batch in all_changes:
-            table_name = change_batch['table']
-            change_type = change_batch['type']
-            
-            print(f"\n🔸 {table_name} ({change_type}):")
-            
-            if change_type == 'annotation' and 'corrections' in change_batch:
-                for correction in change_batch['corrections']:
-                    print(f"    Column '{correction['column']}':")
-                    print(f"      '{correction['current_value']}' → '{correction['new_value']}'")
-                    print(f"      Reason: {correction['reason']} (Confidence: {correction['confidence']:.1%})")
-                    
-            elif change_type == 'vocabulary_normalization':
-                print(f"    Column: {change_batch['column']}")
-                print(f"    Applied vocabulary normalization rules")
-
-    def _run_annotation_correction_manual(self):
-        """Run annotation correction in manual mode"""
-        view_choices = list(self.views.keys())
-        if not view_choices:
-            print("No views configured in config.yaml. Exiting.")
-            return
-
         print("\nPlease select a table to work on:")
-        for i, view_name in enumerate(view_choices):
-            print(f"{i+1}. {view_name} ({self.views[view_name]})")
-
-        while True:
-            try:
-                choice = int(input("Enter the number of your choice: ")) - 1
-                if 0 <= choice < len(view_choices):
-                    selected_view_name = view_choices[choice]
-                    selected_view_id = self.views[selected_view_name]
-                    print(f"\nYou have selected: {selected_view_name}")
-                    break
-                else:
-                    print("Invalid choice. Please enter a number from the list.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
+        view_list = list(self.views.items())
+        for i, (view_name, view_id) in enumerate(view_list, 1):
+            print(f"{i}. {view_name} ({view_id})")
         
-        workflow = CorrectionWorkflow(
-            syn=self.syn,
-            llm=self.llm,
-            view_synapse_id=selected_view_id,
-            data_model_path=self.data_model_path
-        )
-        workflow.run()
+        try:
+            choice = int(input("Enter the number of your choice: "))
+            if 1 <= choice <= len(view_list):
+                selected_view_name, selected_view_id = view_list[choice - 1]
+                print(f"\nYou have selected: {selected_view_name}")
 
-    def _run_vocab_normalization_manual(self):
-        """Run vocabulary normalization in manual mode"""
+                workflow = CorrectionWorkflow(
+                    syn=self.syn, 
+                    llm=self.llm, 
+                    view_synapse_id=selected_view_id, 
+                    data_model_path=self.data_model_path,
+                    orchestrator=self  # Pass the orchestrator
+                )
+                follow_up_tasks = workflow.run()
+                if follow_up_tasks:
+                    self._handle_follow_up_tasks(follow_up_tasks)
+            else:
+                print("Invalid choice.")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+
+    def _run_uncontrolled_vocab_normalization_manual(self):
+        """
+        Manually runs the uncontrolled vocabulary normalization workflow.
+        The user selects a table, and the workflow runs on it.
+        """
         workflow = UncontrolledVocabNormalizationWorkflow(
-            syn=self.syn,
-            llm=self.llm,
-            views=self.views
-        )
-        follow_up_tasks = workflow.run()
-        self._handle_follow_up_tasks(follow_up_tasks)
-
-    def _run_freetext_correction_manual(self):
-        """Run freetext correction in manual mode"""
-        workflow = FreetextCorrectionWorkflow(
             syn=self.syn, 
             llm=self.llm,
-            views=self.views
+            views=self.views,
+            orchestrator=self  # Pass the orchestrator for ontology expert access
         )
         follow_up_tasks = workflow.run()
-        self._handle_follow_up_tasks(follow_up_tasks)
+        if follow_up_tasks:
+            self._handle_follow_up_tasks(follow_up_tasks)
+
+    def _run_freetext_correction_manual(self):
+        """
+        Manually runs the freetext correction workflow.
+        The user selects a table, and the workflow runs on it.
+        """
+        workflow = FreetextCorrectionWorkflow(
+            syn=self.syn,
+            llm=self.llm,
+            views=self.views,
+            freetext_settings=self.fc_config
+        )
+        follow_up_tasks = workflow.run()
+        if follow_up_tasks:
+            self._handle_follow_up_tasks(follow_up_tasks)
+    
+
+
+    def _run_link_external_data_manual(self):
+        """
+        Manually runs the External Data to Synapse linking workflow.
+        """
+        print("\n--- External Data to Synapse Linking Workflow ---")
+        print("This workflow will fetch data from external repositories and create file links in Synapse.")
+        print("Supported repositories: PRIDE (PXD...), GEO (GSE...), ENA (ERP..., ERR... - PREFERRED), SRA (SRP...), and more")
+        print("NOTE: ENA provides direct raw FASTQ access (PREFERRED). SRA provides .sra format files only.")
+        
+        dataset_id = input("Enter the dataset ID (e.g., PXD001234 for PRIDE, GSE123456 for GEO, ERR123456 for ENA, SRP399711 for SRA): ").strip()
+        target_synapse_id = input("Enter the target Synapse Project/Folder ID (e.g., syn12345678): ").strip()
+
+        if not dataset_id or not target_synapse_id:
+            print("Dataset ID and Synapse ID are required. Exiting workflow.")
+            return
+
+        # Validate Synapse ID format
+        if not target_synapse_id.startswith('syn'):
+            print("Warning: Synapse IDs typically start with 'syn'. Proceeding anyway...")
+
+        # Detect repository type
+        dataset_upper = dataset_id.upper()
+        if dataset_upper.startswith('PXD'):
+            repo_type = "PRIDE"
+        elif dataset_upper.startswith('GSE'):
+            repo_type = "GEO"
+        elif dataset_upper.startswith('SRP'):
+            repo_type = "SRA"
+        elif dataset_upper.startswith(('ERP', 'ERR', 'ERS', 'ERX', 'PRJ')):
+            repo_type = "ENA"
+        else:
+            repo_type = "UNKNOWN"
+            print(f"Warning: Repository type not recognized for '{dataset_id}'. The agent will attempt to handle it generically.")
+
+        # For SRA datasets, check if ENA FASTQ files are available and offer choice
+        # For ENA datasets, use ENA tools directly
+        file_type_preference = None
+        if repo_type == "SRA":
+            print(f"\nChecking file availability for SRA dataset {dataset_id}...")
+            try:
+                # Quick check for ENA FASTQ availability
+                from src.tools.sra_tools import SraDatasetFilesTool
+                sra_tool = SraDatasetFilesTool()
+                files_result = sra_tool._run(srp_id=dataset_id, include_ena_fastq=True)
+                
+                sra_count = files_result.get('file_categories', {}).get('SRA', 0)
+                fastq_count = files_result.get('file_categories', {}).get('FASTQ', 0)
+                
+                if fastq_count > 0:
+                    print(f"\nFound {sra_count} SRA files and {fastq_count} ENA FASTQ files for {dataset_id}")
+                    print("\nFile format options:")
+                    print("1. Link SRA files (.sra format - requires SRA Toolkit for FASTQ conversion)")
+                    print("2. Link ENA FASTQ files (direct FASTQ access - recommended)")
+                    print("3. Link both SRA and ENA FASTQ files")
+                    
+                    while True:
+                        choice = input("Choose file format preference (1, 2, or 3): ").strip()
+                        if choice == "1":
+                            file_type_preference = "SRA_ONLY"
+                            print("Selected: SRA files only")
+                            break
+                        elif choice == "2":
+                            file_type_preference = "FASTQ_ONLY"
+                            print("Selected: ENA FASTQ files only (recommended)")
+                            break
+                        elif choice == "3":
+                            file_type_preference = "BOTH"
+                            print("Selected: Both SRA and ENA FASTQ files")
+                            break
+                        else:
+                            print("Invalid choice. Please enter 1, 2, or 3.")
+                else:
+                    print(f"\nFound {sra_count} SRA files for {dataset_id}. No ENA FASTQ files available.")
+                    file_type_preference = "SRA_ONLY"
+                    
+            except Exception as e:
+                print(f"Warning: Could not check file availability: {e}")
+                print("Proceeding with default SRA file linking...")
+                file_type_preference = "SRA_ONLY"
+        
+        elif repo_type == "ENA":
+            print(f"\nENA accession {dataset_id} detected. ENA provides direct FASTQ file access.")
+            file_type_preference = "ENA_FASTQ_ONLY"
+
+        print(f"\nInitiating external data linking for {repo_type} dataset {dataset_id} to Synapse container {target_synapse_id}...")
+
+        try:
+            from crewai import Task, Crew, Process
+
+            # Create a task for the external data linking agent
+            task_description = f"""
+                Link external dataset {dataset_id} to Synapse container {target_synapse_id} using external file links only (no annotations)."""
+            
+            # Add file type preference for SRA datasets
+            if file_type_preference:
+                task_description += f"""
+                
+                FILE TYPE PREFERENCE: {file_type_preference}
+                - If "SRA_ONLY": Only link .sra format files from NCBI SRA
+                - If "FASTQ_ONLY": Only link FASTQ files from ENA (skip .sra files) 
+                - If "BOTH": Link both SRA and ENA FASTQ files in separate subfolders
+                - If "ENA_FASTQ_ONLY": Use ENA FASTQ Files Fetcher directly for efficient FASTQ-only access"""
+
+            task = Task(
+                description=task_description + f"""
+                
+                REPOSITORY IDENTIFICATION:
+                - Analyze the dataset ID '{dataset_id}' to determine repository type
+                - Use appropriate tools based on repository type (PREFER ENA OVER SRA when both are available):
+                  * PXD prefix = PRIDE repository (use PRIDE Dataset Metadata Fetcher and PRIDE Dataset Files Fetcher)
+                  * GSE prefix = GEO repository (use GEO Metadata Fetcher and GEO Dataset Files Fetcher)
+                  * ERP/ERR/ERS/ERX/PRJ prefix = ENA repository (use ENA Dataset Metadata Fetcher and ENA FASTQ Files Fetcher) - PREFERRED for raw data
+                  * SRP prefix = SRA repository (use SRA Dataset Metadata Fetcher and SRA Dataset Files Fetcher) - USE ONLY if ENA not available
+                  * EBI Metagenomics URLs = ENA repository (use ENA tools for direct FASTQ access)
+                  * Unknown = Use Code Interpreter Tool to investigate and create custom solution (supports external HTTP requests, package installation, and arbitrary Python code execution). CRITICAL: When using Code Interpreter Tool, the libraries_used parameter MUST be a list like ['requests', 'beautifulsoup4'] NOT a string like 'requests,beautifulsoup4'. If the dataset contains sequencing data, prioritize finding ENA accessions over SRA accessions.
+                
+                Follow these EFFICIENT steps using batch operations:
+                1. Identify repository type from dataset ID pattern
+                2. Fetch metadata using appropriate repository-specific tool
+                3. Get the list of files using the most efficient approach for FILE TYPE PREFERENCE (PREFER RAW DATA):
+                   - FIRST PRIORITY: Use ENA FASTQ Files Fetcher if ENA accessions are available (provides direct raw FASTQ access)
+                   - SRA_ONLY: Use SRA Dataset Files Fetcher with include_ena_fastq=false (fetches only SRA files) - AVOID unless necessary
+                   - FASTQ_ONLY: Use SRA Dataset Files Fetcher with include_ena_fastq=true, then IMMEDIATELY filter the results to include only files where file_category='FASTQ' (ignore all SRA files)
+                   - BOTH: Use SRA Dataset Files Fetcher with include_ena_fastq=true (use all files as-is)
+                   - ENA_FASTQ_ONLY: Use ENA FASTQ Files Fetcher directly (MOST EFFICIENT and PREFERRED for raw FASTQ access)
+                4. Create appropriate folder structure based on filtered file list
+                5. Use create_folders to create organized folder structure in ONE operation:
+                   - Main folder named after the dataset (using title and accession)
+                   - Subfolders based on repository conventions and file type preference
+                6. Use create_external_file_links to create ALL external file links in ONE batch operation:
+                   - NEVER download files - always use external file links
+                   - Use appropriate URLs (FTP/HTTP) to create external links
+                   - Organize files into logical subfolders by type and category
+                   - Intelligently determine MIME types based on file extensions
+                   - Include file sizes from metadata when available
+                7. Provide a summary of files linked and folder structure created
+                
+                CRITICAL EFFICIENCY RULES:
+                - ALWAYS PREFER ENA over SRA when both are available (ENA provides better raw data access)
+                - ALWAYS PREFER raw data formats (FASTQ) over processed formats (SRA) when possible
+                - Use create_folders for ALL folders in ONE call
+                - Use create_external_file_links for ALL filtered files in ONE batch call
+                - Keep descriptions under 1000 characters when creating file links
+                - This should complete in 4-6 tool calls total (including filtering step)
+                - DO NOT apply annotations - that is handled by a separate workflow
+                - RESPECT the FILE TYPE PREFERENCE - filter files immediately after fetching, don't process unwanted files
+                - For FASTQ_ONLY preference: fetch with include_ena_fastq=true but immediately discard all files where file_category='SRA'
+                - For Code Interpreter Tool: Always use libraries_used as a LIST format: ["requests", "beautifulsoup4"] never as string "requests,beautifulsoup4"
+                - If unknown dataset contains sequencing data, look for ENA accessions (ERR, ERP, ERS, ERX) before SRA accessions (SRR, SRP)
+                """,
+                agent=self.agents["link_external_data"],
+                expected_output="A detailed summary of the external data linking operation including repository type identified, folder structure created, external file links created, and any issues encountered. Note: Annotations are not applied in this step."
+            )
+
+            crew = Crew(
+                agents=[self.agents["link_external_data"]],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=True,
+                memory=False
+            )
+
+            print("\nExecuting external data linking workflow...")
+            result = crew.kickoff()
+            
+            print("\n" + "="*60)
+            print("EXTERNAL DATA LINKING WORKFLOW COMPLETED")
+            print("="*60)
+            print(f"Result: {result}")
+            
+        except Exception as e:
+            print(f"\nError during external data linking workflow: {e}")
+            print("Please check your inputs and try again.")
+
+    def _run_sync_external_metadata_manual(self):
+        """
+        Manually runs the External Metadata to Synapse Annotations sync workflow.
+        """
+        print("\n--- External Metadata to Synapse Annotations Sync Workflow ---")
+        print("This workflow will apply external metadata (such as from PRIDE, GEO, etc.) as")
+        print("schema-compliant annotations to existing Synapse entities.")
+        
+        metadata_source = input("Enter the metadata source (e.g., 'PRIDE', 'GEO'): ").strip().upper()
+        
+        if metadata_source == 'PRIDE':
+            pride_id = input("Enter the PRIDE dataset ID (e.g., PXD001234): ").strip()
+            target_synapse_folder = input("Enter the Synapse folder ID containing the files to annotate: ").strip()
+            
+            if not pride_id or not target_synapse_folder:
+                print("PRIDE ID and Synapse folder ID are required. Exiting workflow.")
+                return
+            
+            print(f"\nApplying PRIDE metadata from {pride_id} to files in {target_synapse_folder}...")
+            
+            try:
+                from crewai import Task, Crew, Process
+                
+                task = Task(
+                    description=f"""
+                    Apply PRIDE dataset metadata as schema-compliant annotations to Synapse entities.
+                    
+                    Steps:
+                    1. Fetch metadata for PRIDE dataset {pride_id}
+                    2. Use PRIDE Annotation Mapper to generate schema-compliant annotations:
+                       - Map PRIDE metadata to valid schema attributes
+                       - Use data model URL: https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld
+                       - Ensure all annotation values are valid according to the schema
+                    3. Find all file entities in Synapse folder {target_synapse_folder} (including subfolders)
+                    4. Use apply_annotations to apply the mapped annotations to ALL files in ONE batch operation
+                    5. Provide a summary of annotations applied
+                    
+                    CRITICAL REQUIREMENTS:
+                    - ONLY use schema-valid annotation values
+                    - Do NOT hardcode annotation values - always validate against schema
+                    - Apply annotations in batch for efficiency
+                    - Provide detailed summary of what annotations were applied
+                    """,
+                    agent=self.agents["sync_external_metadata"],
+                    expected_output="A detailed summary of the external metadata sync operation including the annotations generated, files annotated, and any schema validation issues encountered."
+                )
+                
+                crew = Crew(
+                    agents=[self.agents["sync_external_metadata"]],
+                    tasks=[task],
+                    process=Process.sequential,
+                    verbose=True,
+                    memory=False
+                )
+                
+                print("\nExecuting external metadata sync workflow...")
+                result = crew.kickoff()
+                
+                print("\n" + "="*60)
+                print("EXTERNAL METADATA SYNC WORKFLOW COMPLETED")
+                print("="*60)
+                print(f"Result: {result}")
+                
+            except Exception as e:
+                print(f"\nError during external metadata sync workflow: {e}")
+                print("Please check your inputs and try again.")
+        
+        else:
+            print(f"Metadata source '{metadata_source}' is not yet supported.")
+            print("Currently supported sources: PRIDE")
 
     def _handle_follow_up_tasks(self, follow_up_tasks):
-        """Handle follow-up tasks like GitHub issue creation"""
-        if follow_up_tasks:
-            print("\n--- Processing Follow-up Tasks ---")
-            for task in follow_up_tasks:
-                if task.get('type') == 'github_issue':
-                    try:
-                        github_agent_class = self.agents.get('github_issue_filer')
-                        if github_agent_class:
-                            github_agent = github_agent_class()
-                            github_agent.run(task)
-                        else:
-                            print("Error: GitHub Issue Filer Agent not configured.")
-                    except ConnectionError as e:
-                        print(f"Could not process GitHub issue task: {e}")
+        """
+        Handles any follow-up tasks generated by a workflow,
+        such as filing GitHub issues.
+        """
+        if not follow_up_tasks:
+            return
+
+        print("\nFollow-up tasks have been generated:")
+        for i, task_details in enumerate(follow_up_tasks, 1):
+            print(f"  {i}. Type: {task_details.get('type')}")
+            # print(f"     Details: {task_details.get('details')}")
+
+        if input("Do you want to execute these tasks now? (yes/no): ").lower() in ['y', 'yes']:
+            for task_details in follow_up_tasks:
+                if task_details.get('type') == 'file_github_issue' and self.agents.get("github_issue_filer"):
+                    print("\nFiling GitHub issue...")
+                    self.agents["github_issue_filer"].file_issue(
+                        title=task_details['details'].get('title'),
+                        body=task_details['details'].get('body'),
+                        repo=task_details['details'].get('repo')
+                    )
                 else:
-                    print(f"Unknown follow-up task type: {task.get('type')}") 
+                    print(f"Skipping task of type '{task_details.get('type')}' - no handler configured.")
+
+    def _consult_ontology_expert(self, column_name: str, value: str) -> dict:
+        """
+        Consults the ontology expert for a suggestion for a given value.
+        """
+        print(f"  🎓 Consulting ontology expert for '{value}' in column '{column_name}'...")
+        
+        try:
+            # Get a few other values from the column to provide context
+            context_query = f'SELECT "{column_name}" FROM {self.ac_config["main_fileview"]} WHERE "{column_name}" IS NOT NULL LIMIT 5'
+            context_df = self.syn.tableQuery(context_query).asDataFrame()
+            context_values = context_df[column_name].unique().tolist()
+            
+            # Remove the value we are trying to map, if it's there
+            if value in context_values:
+                context_values.remove(value)
+            
+            # Make sure we don't have too many, and they are strings
+            context_values = [str(v) for v in context_values[:4]]
+
+        except Exception as e:
+            # print(f"      Warning: Could not get context values for expert. {e}")
+            context_values = []
+
+        task = Task(
+            description=f"For the column '{column_name}', find the best standardized ontology term for the value '{value}'. For context, here are some other existing values in this column: {context_values}\nYour final answer MUST be a single JSON object with 'term', 'uri', and 'confidence_score' keys.",
+            agent=self.agents["ontology_expert"],
+            expected_output="A single JSON object with 'term', 'uri', and 'confidence_score' keys."
+        )
+
+        crew = Crew(
+            agents=[self.agents["ontology_expert"]],
+            tasks=[task],
+            process=Process.sequential,
+            verbose=True,
+            memory=False
+        )
+        
+        result = crew.kickoff()
+        
+        try:
+            # The result from crew.kickoff() is a CrewOutput object, we need the raw string from it
+            json_string = result.raw if hasattr(result, 'raw') else str(result)
+            
+            # The output might be wrapped in a JSON markdown block
+            if '```json' in json_string:
+                json_string = json_string.split('```json')[1].split('```')[0].strip()
+
+            expert_suggestion = json.loads(json_string)
+            if expert_suggestion and 'term' in expert_suggestion and 'uri' in expert_suggestion:
+                print(f"  🎓 Expert suggests: '{expert_suggestion['term']}' ({expert_suggestion['uri']})")
+                
+                # Check if the suggested term is a new term for this column
+                is_new = self._is_new_term(column_name, expert_suggestion['uri'])
+
+                confidence_val = expert_suggestion.get('confidence_score', 0.7)
+                if isinstance(confidence_val, str):
+                    if confidence_val.lower() == 'high':
+                        confidence = 0.9
+                    elif confidence_val.lower() == 'medium':
+                        confidence = 0.6
+                    elif confidence_val.lower() == 'low':
+                        confidence = 0.3
+                    else: # Try to convert to float if it's a string number
+                        try:
+                            confidence = float(confidence_val)
+                        except (ValueError, TypeError):
+                            confidence = 0.7
+                else:
+                    confidence = float(confidence_val)
+
+                return {
+                    "current_value": value,
+                    "new_value": expert_suggestion['term'],
+                    "confidence": confidence,
+                    "is_new_term": is_new,
+                    "uri": expert_suggestion['uri']
+                }
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"  ❌ Error decoding expert suggestion: {e}")
+            raw_output = result.raw if hasattr(result, 'raw') else str(result)
+            print(f"  Raw output from expert: {raw_output}")
+            return None
+
+    def _is_new_term(self, column_name, term_uri):
+        """
+        Checks if a given term URI is new for a specific column based on the data model.
+        """
+        try:
+            jsonld_tool = JsonLdGetValidValuesTool()
+            valid_values = jsonld_tool._run(source=self.data_model_path, attribute_name=column_name)
+            
+            # The tool returns a list of dictionaries if there are URIs
+            if isinstance(valid_values, list) and valid_values:
+                # Check if the first item is a dict to guess the structure
+                if isinstance(valid_values[0], dict):
+                    existing_uris = [v.get('uri') for v in valid_values if v.get('uri')]
+                    return term_uri not in existing_uris
+        except Exception:
+            # If we can't get the valid values, assume it's not new to be safe
+            return False
+        return True # It's new if we couldn't find it or the list was empty
+
+    def _apply_all_changes(self, all_changes):
+        """
+        Applies a batch of changes collected across multiple tables/workflows.
+        """
+        # We need to flatten the `all_changes` structure for the CorrectionWorkflow
+        # The structure is a list of dicts, e.g.,
+        # [{'table': 'view_name', 'type': 'annotation', 'corrections': {'col': [...]}}, ...]
+
+        for change_batch in all_changes:
+            table_name = change_batch.get('table')
+            change_type = change_batch.get('type')
+            
+            if change_type == 'annotation':
+                corrections = change_batch.get('corrections')
+                view_id = self.views.get(table_name)
+                if view_id and corrections:
+                    print(f"\nApplying annotation changes to {table_name} ({view_id})...")
+                    workflow = CorrectionWorkflow(
+                        syn=self.syn, 
+                        llm=self.llm, 
+                        view_synapse_id=view_id, 
+                        data_model_path=self.data_model_path,
+                        orchestrator=self
+                    )
+                    workflow._execute_updates(corrections)
+            
+            elif change_type == 'vocab':
+                # This part is a bit trickier because the vocab workflow handles execution internally.
+                # For now, we'll assume the semi-autonomous vocab workflow would need a similar
+                # refactor to queue changes and execute them here.
+                # This is a placeholder for that future implementation.
+                print(f"Skipping application of vocab changes for {table_name} - not yet implemented in batch mode.")
+
+    def _show_detailed_changes(self, flat_changes):
+        """
+        Shows a detailed view of all changes about to be applied.
+        """
+        print("\n--- Detailed Changes ---")
+        for change in flat_changes:
+            print(f"Table: {change['table_name']}")
+            print(f"  Column: {change['column']}")
+            print(f"    - Change '{change['current_value']}' to '{change['new_value']}'")
+        print("------------------------\n")
