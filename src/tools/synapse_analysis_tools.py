@@ -208,7 +208,9 @@ class MetadataFileAnalysisTool(BaseTool):
     description: str = (
         "Downloads and analyzes metadata files from Synapse to extract structured "
         "information that can be used for annotation. Supports common formats like "
-        "CSV, TSV, JSON, XML, and text files. Returns extracted metadata in a "
+        "CSV, TSV, JSON, XML, and text files. Files larger than 10MB and known large "
+        "file types (e.g., .raw, .mzML mass spectrometry files) are automatically "
+        "skipped to avoid performance issues. Returns extracted metadata in a "
         "structured format."
     )
     args_schema: Type[BaseModel] = MetadataFileAnalysisInput
@@ -239,13 +241,43 @@ class MetadataFileAnalysisTool(BaseTool):
         file_ids = file_ids[:max_files]
         
         extracted_metadata = {}
+        max_file_size = 10 * 1024 * 1024  # 10MB in bytes
         
         for file_id in file_ids:
             try:
+                # First get file entity without downloading to check size
+                file_entity_info = self.syn.get(file_id, downloadFile=False)
+                file_name = file_entity_info.name
+                file_size = getattr(file_entity_info, 'contentSize', 0)
+                
+                # Check file size limit - be conservative with unknown sizes
+                if file_size and file_size > max_file_size:
+                    extracted_metadata[file_id] = {
+                        'file_name': file_name,
+                        'file_id': file_id,
+                        'skipped': True,
+                        'reason': f'File too large ({file_size / (1024*1024):.1f}MB > 10MB limit)',
+                        'file_size_mb': file_size / (1024*1024)
+                    }
+                    continue
+                
+                # For files with unknown size (contentSize=0), check file extension for potential large files
+                if file_size == 0:
+                    large_file_extensions = ['.raw', '.mzML', '.mzXML', '.wiff', '.d', '.baf', '.fid', '.ser', '.t2d', '.yep']
+                    file_ext = os.path.splitext(file_name.lower())[1]
+                    if file_ext in large_file_extensions:
+                        extracted_metadata[file_id] = {
+                            'file_name': file_name,
+                            'file_id': file_id,
+                            'skipped': True,
+                            'reason': f'Skipped likely large file type ({file_ext}) with unknown size',
+                            'file_size_mb': None
+                        }
+                        continue
+                
                 # Download file to temporary location
                 file_entity = self.syn.get(file_id, downloadLocation=tempfile.gettempdir())
                 file_path = file_entity.path
-                file_name = file_entity.name
                 
                 # Parse file based on extension
                 metadata = self._parse_metadata_file(file_path, file_name)
@@ -253,6 +285,7 @@ class MetadataFileAnalysisTool(BaseTool):
                     extracted_metadata[file_id] = {
                         'file_name': file_name,
                         'file_id': file_id,
+                        'file_size_mb': file_size / (1024*1024),
                         'metadata': metadata
                     }
                 
@@ -270,7 +303,9 @@ class MetadataFileAnalysisTool(BaseTool):
         return {
             "extracted_metadata": extracted_metadata,
             "files_processed": len(file_ids),
-            "successful_extractions": len([v for v in extracted_metadata.values() if 'metadata' in v])
+            "successful_extractions": len([v for v in extracted_metadata.values() if 'metadata' in v]),
+            "skipped_files": len([v for v in extracted_metadata.values() if v.get('skipped', False)]),
+            "skipped_details": [v for v in extracted_metadata.values() if v.get('skipped', False)]
         }
 
     def _parse_metadata_file(self, file_path: str, file_name: str) -> dict:
