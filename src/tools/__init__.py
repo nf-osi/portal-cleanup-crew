@@ -1,12 +1,4 @@
-from .geo_tools import GeoMetadataFetcherTool, GeoDatasetFilesTool
-from .sra_tools import SraDatasetMetadataTool, SraDatasetFilesTool
-from .ena_tools import EnaDatasetMetadataTool, EnaFastqFilesTool
-from .jsonld_tools import JsonLdGetValidValuesTool, JsonLdGetManifestsTool
-from .pride_tools import (
-    PrideDatasetMetadataTool,
-    PrideDatasetFilesTool,
-    PrideAnnotationMapperTool
-)
+# Import all tools here for easy access
 from .synapse_tools import (
     SynapsePythonCodeExecutorTool,
     UpdateViewTool,
@@ -19,13 +11,27 @@ from .synapse_tools import (
     SynapseBatchAnnotationTool,
     get_entity_children_recursively
 )
+from .jsonld_tools import (
+    JsonLdGetValidValuesTool, 
+    JsonLdGetManifestsTool,
+    JsonLdGetAttributeDisplayNameTool
+)
+from .zooma_tools import ZoomaTermMappingTool
+from .ena_tools import EnaDatasetMetadataTool, EnaFastqFilesTool
+from .geo_tools import GeoMetadataFetcherTool, GeoDatasetFilesTool  
+from .sra_tools import SraDatasetMetadataTool, SraDatasetFilesTool
+from .pride_tools import (
+    PrideDatasetMetadataTool, 
+    PrideDatasetFilesTool,
+    PrideAnnotationMapperTool
+)
 from .synapse_analysis_tools import (
     SynapseFolderAnalysisTool,
     MetadataFileAnalysisTool,
     TemplateDetectionTool,
-    AnnotationCSVSaveTool,
     SingleAttributeAnnotationTool,
     AnnotationCSVBuilderTool,
+    AnnotationCSVSaveTool,
     ApplyAnnotationsFromCSVTool
 )
 

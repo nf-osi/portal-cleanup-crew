@@ -382,7 +382,7 @@ class OrchestratorAgent:
                     1. Fetch metadata for PRIDE dataset {pride_id}
                     2. Use PRIDE Annotation Mapper to generate schema-compliant annotations:
                        - Map PRIDE metadata to valid schema attributes
-                       - Use data model URL: https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld
+                       - Use data model URL: {self.data_model_path}
                        - Ensure all annotation values are valid according to the schema
                     3. Find all file entities in Synapse folder {target_synapse_folder} (including subfolders)
                     4. Use apply_annotations to apply the mapped annotations to ALL files in ONE batch operation
@@ -470,12 +470,14 @@ class OrchestratorAgent:
                 
                 3. DETERMINE APPROPRIATE TEMPLATE:
                    - Use Template Detection Tool to get all available templates from the schema
+                   - Use data model URL: {self.data_model_path}
                    - Analyze file types, external identifiers, and metadata content
                    - Based on the evidence, select the most appropriate metadata template
                    - Consider file extensions, content types, external repository IDs, and metadata content
                 
                 4. GENERATE ANNOTATIONS:
                    - Use Annotation Generation Tool with the chosen template
+                   - Use data model URL: {self.data_model_path}
                    - Get controlled vocabulary options for each template attribute
                    - Map available metadata to appropriate schema attributes
                    - Generate consistent annotations for all DATA files (not metadata files)
@@ -498,6 +500,7 @@ class OrchestratorAgent:
                 - Apply consistent annotations across similar files
                 - Base decisions on actual file analysis, not assumptions
                 - Let the available templates and metadata guide the annotation process
+                - ALWAYS use data model URL: {self.data_model_path} for ALL JSON-LD operations
                 """,
                 agent=self.agents["dataset_annotation_agent"],
                 expected_output="A comprehensive summary of the dataset analysis and annotation process, including the number of files analyzed, template selected, annotations applied, and any issues encountered. Include the path to the saved CSV file with annotation details."
