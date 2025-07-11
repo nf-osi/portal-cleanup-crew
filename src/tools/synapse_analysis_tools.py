@@ -110,7 +110,7 @@ class SynapseFolderAnalysisTool(BaseTool):
                 child_id = child['id']
                 child_type = child.get('type', '')
                 
-                if 'FileEntity' in child_type:
+                if 'FileEntity' in child_type or child_type.endswith('.FileEntity'):
                     # Get file entity with annotations
                     try:
                         file_entity = self.syn.get(child_id, downloadFile=False)
@@ -128,7 +128,7 @@ class SynapseFolderAnalysisTool(BaseTool):
                     except Exception as e:
                         print(f"Warning: Could not get file entity {child_id}: {e}")
                 
-                elif 'FolderEntity' in child_type:
+                elif 'FolderEntity' in child_type or 'Folder' in child_type or child_type.endswith('.Folder'):
                     # Recurse into folder
                     self._get_children_recursive(child_id, files_list)
                     
