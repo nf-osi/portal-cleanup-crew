@@ -629,10 +629,10 @@ class AnnotationCSVSaveTool(BaseTool):
 
 class AnnotationGenerationInput(BaseModel):
     """Input for generating annotations based on template and available metadata."""
-    chosen_template: dict = Field(description="The selected template with its attributes")
-    file_analysis: dict = Field(description="File analysis results")
-    metadata_analysis: dict = Field(default={}, description="Metadata analysis results")
-    data_files: List[dict] = Field(description="List of data files to annotate")
+    template_id: str = Field(description="The ID of the selected template (e.g., 'bts:MassSpecAssayTemplate')")
+    entity_count: int = Field(description="Number of entities to generate annotations for")
+    external_identifiers: dict = Field(default={}, description="External identifiers found (e.g., {'pride': ['PXD036000']})")
+    sample_metadata: dict = Field(default={}, description="Sample metadata extracted from files (e.g., treatment mappings)")
     data_model_url: str = Field(
         default="https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld",
         description="URL or path to the JSON-LD data model"
@@ -642,42 +642,65 @@ class AnnotationGenerationInput(BaseModel):
 class AnnotationGenerationTool(BaseTool):
     name: str = "Annotation Generation Tool"
     description: str = (
-        "Generates schema-compliant annotations for data files based on the chosen "
-        "template and available metadata. Provides attribute options and controlled "
-        "vocabulary choices for LLM decision-making rather than making assumptions "
-        "about how to map metadata to attributes."
+        "Generates schema-compliant annotation suggestions based on a template ID "
+        "and available metadata. Provides a simplified interface that returns "
+        "annotation templates and controlled vocabulary options for LLM decision-making."
     )
     args_schema: Type[BaseModel] = AnnotationGenerationInput
 
-    def _run(self, chosen_template: dict, file_analysis: dict, metadata_analysis: dict, data_files: List[dict], data_model_url: str = "https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld") -> dict:
+    def _run(self, template_id: str, entity_count: int, external_identifiers: dict = {}, sample_metadata: dict = {}, data_model_url: str = "https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld") -> dict:
         """
         Generates annotation options for LLM decision-making.
         
         Args:
-            chosen_template: The selected template with attributes
-            file_analysis: Analysis of the folder structure
-            metadata_analysis: Analysis of metadata files
-            data_files: List of data files to annotate
+            template_id: The template ID to use (e.g., 'bts:MassSpecAssayTemplate')
+            entity_count: Number of entities to generate annotations for
+            external_identifiers: External identifiers found in the dataset
+            sample_metadata: Sample-level metadata (e.g., treatment mappings)
             data_model_url: URL to JSON-LD data model
             
         Returns:
-            Dictionary with annotation options and available metadata for LLM processing
+            Dictionary with annotation templates and controlled vocabulary options
         """
         try:
-            # Get all available metadata sources
-            available_metadata = self._collect_available_metadata(
-                file_analysis, metadata_analysis
-            )
+            # Get template information from JSON-LD
+            try:
+                # Handle relative imports
+                try:
+                    from .jsonld_tools import JsonLdGetManifestsTool, _load_jsonld
+                except ImportError:
+                    from jsonld_tools import JsonLdGetManifestsTool, _load_jsonld
+                
+                # Load the JSON-LD to get template details
+                jsonld_data = _load_jsonld(data_model_url)
+                if not jsonld_data:
+                    return {"error": "Failed to load JSON-LD data model"}
+                
+                # Find the specific template
+                template = None
+                for item in jsonld_data.get('@graph', []):
+                    if item.get('@id') == template_id:
+                        template = item
+                        break
+                
+                if not template:
+                    return {"error": f"Template {template_id} not found in data model"}
+                
+                # Get template attributes
+                template_attributes = self._extract_template_attributes(jsonld_data, template)
+                
+            except Exception as e:
+                return {"error": f"Failed to load template information: {str(e)}"}
             
-            # Get template attributes with controlled vocabulary options
-            template_attributes = chosen_template.get('attributes', [])
-            
-            # For each attribute, get the valid values if it has controlled vocabulary
+            # Get controlled vocabulary for key attributes
+            key_attributes = ['Assay', 'DataType', 'SampleType', 'Species', 'DiseaseFocus', 'FileFormat']
             enriched_attributes = []
+            
             for attr in template_attributes:
                 attr_label = attr.get('label', '')
-                if attr_label:
-                    # Get valid values for this attribute
+                enriched_attr = attr.copy()
+                
+                if attr_label in key_attributes:
                     try:
                         # Handle relative imports
                         try:
@@ -688,97 +711,57 @@ class AnnotationGenerationTool(BaseTool):
                         jsonld_tool = JsonLdGetValidValuesTool()
                         valid_values = jsonld_tool._run(data_model_url, attr_label)
                         
-                        enriched_attr = attr.copy()
-                        if isinstance(valid_values, list):
-                            enriched_attr['valid_values'] = valid_values
+                        if isinstance(valid_values, list) and valid_values:
+                            enriched_attr['valid_values'] = valid_values[:20]  # Limit to first 20 for readability
                         else:
                             enriched_attr['valid_values'] = None
-                        enriched_attributes.append(enriched_attr)
-                    except Exception as e:
-                        # If we can't get valid values, just include the attribute
-                        attr_copy = attr.copy()
-                        attr_copy['valid_values'] = None
-                        enriched_attributes.append(attr_copy)
+                    except:
+                        enriched_attr['valid_values'] = None
                 else:
-                    attr_copy = attr.copy()
-                    attr_copy['valid_values'] = None
-                    enriched_attributes.append(attr_copy)
-            
-            # Prepare file list for annotation
-            files_for_annotation = []
-            for file_info in data_files:
-                files_for_annotation.append({
-                    'entity_id': file_info['id'],
-                    'file_name': file_info['name'],
-                    'file_size': file_info.get('contentSize', 0),
-                    'content_type': file_info.get('contentType', ''),
-                    'description': file_info.get('description', ''),
-                    'existing_annotations': file_info.get('annotations', {})
-                })
+                    enriched_attr['valid_values'] = None
+                
+                enriched_attributes.append(enriched_attr)
             
             return {
-                "chosen_template": chosen_template,
-                "template_attributes": enriched_attributes,
-                "available_metadata": available_metadata,
-                "files_for_annotation": files_for_annotation,
-                "annotation_instructions": self._generate_annotation_instructions(
-                    enriched_attributes, available_metadata
+                "template": {
+                    "id": template_id,
+                    "label": template.get('rdfs:label', template_id),
+                    "description": template.get('rdfs:comment', 'No description available')
+                },
+                "attributes": enriched_attributes,
+                "entity_count": entity_count,
+                "external_identifiers": external_identifiers,
+                "sample_metadata": sample_metadata,
+                "annotation_instructions": self._generate_simple_instructions(
+                    template_id, entity_count, enriched_attributes
                 )
             }
             
         except Exception as e:
             return {"error": f"Failed to generate annotation options: {str(e)}"}
 
-    def _collect_available_metadata(self, file_analysis: dict, metadata_analysis: dict) -> dict:
-        """Collect all available metadata from various sources."""
-        metadata = {
-            "external_identifiers": file_analysis.get('external_identifiers', {}),
-            "entity_info": {
-                "name": file_analysis.get('entity_name', ''),
-                "description": file_analysis.get('entity_description', ''),
-                "type": file_analysis.get('entity_type', '')
-            },
-            "extracted_metadata": {}
-        }
+    def _generate_simple_instructions(self, template_id: str, entity_count: int, attributes: list) -> str:
+        """Generate simplified instructions for annotation generation."""
         
-        # Add metadata from files
-        if metadata_analysis.get('extracted_metadata'):
-            for file_id, file_meta in metadata_analysis['extracted_metadata'].items():
-                if 'metadata' in file_meta:
-                    metadata["extracted_metadata"][file_meta['file_name']] = file_meta['metadata']
-        
-        return metadata
-
-    def _generate_annotation_instructions(self, attributes: list, available_metadata: dict) -> str:
-        """Generate instructions for the LLM on how to create annotations."""
-        
-        required_attrs = [attr for attr in attributes if attr.get('required')]
-        optional_attrs = [attr for attr in attributes if not attr.get('required')]
+        key_attrs = [attr for attr in attributes if attr.get('label') in 
+                    ['Assay', 'DataType', 'FileFormat', 'SampleType', 'Species', 'DiseaseFocus']]
         
         instructions = f"""
-        ANNOTATION GENERATION INSTRUCTIONS:
+        ANNOTATION INSTRUCTIONS FOR {template_id}:
         
-        You have {len(attributes)} template attributes available ({len(required_attrs)} required, {len(optional_attrs)} optional).
+        Generate annotations for {entity_count} data files using this template.
         
-        REQUIRED ATTRIBUTES (must be filled):
-        {chr(10).join(f"- {attr['label']}: {attr.get('description', 'No description')}" for attr in required_attrs)}
+        KEY ATTRIBUTES TO FOCUS ON:
+        {chr(10).join(f"- {attr['label']}: {attr.get('description', 'No description')}" for attr in key_attrs[:6])}
         
-        OPTIONAL ATTRIBUTES (fill if metadata available):
-        {chr(10).join(f"- {attr['label']}: {attr.get('description', 'No description')}" for attr in optional_attrs[:10])}
-        {"..." if len(optional_attrs) > 10 else ""}
+        GUIDELINES:
+        1. Use controlled vocabulary values when available (check 'valid_values' for each attribute)
+        2. Apply consistent study-level metadata across all files
+        3. Use sample-specific metadata where available
+        4. Derive missing values from external identifiers or file names when possible
+        5. Focus on the most important attributes first
         
-        AVAILABLE METADATA SOURCES:
-        - External identifiers: {list(available_metadata.get('external_identifiers', {}).keys())}
-        - Entity information: {available_metadata.get('entity_info', {}).get('name', 'None')}
-        - Extracted metadata files: {len(available_metadata.get('extracted_metadata', {}))} files
-        
-        INSTRUCTIONS:
-        1. For each data file, create annotations using the template attributes
-        2. Use controlled vocabulary values when available (check 'valid_values' for each attribute)
-        3. Map available metadata to appropriate attributes based on meaning
-        4. Ensure required attributes are filled for all files
-        5. Use consistent values across files when appropriate (e.g., study-level metadata)
-        6. If metadata is missing for required fields, use placeholder values or derive from file names
+        Total attributes available: {len(attributes)}
         """
         
         return instructions 
