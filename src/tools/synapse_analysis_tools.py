@@ -208,8 +208,7 @@ class MetadataFileAnalysisTool(BaseTool):
     description: str = (
         "Downloads and analyzes metadata files from Synapse to extract structured "
         "information that can be used for annotation. Supports common formats like "
-        "CSV, TSV, JSON, XML, and text files. Files larger than 10MB and known large "
-        "file types (e.g., .raw, .mzML mass spectrometry files) are automatically "
+        "CSV, TSV, JSON, XML, and text files. Files larger than 10MB are automatically "
         "skipped to avoid performance issues. Returns extracted metadata in a "
         "structured format."
     )
@@ -250,8 +249,8 @@ class MetadataFileAnalysisTool(BaseTool):
                 file_name = file_entity_info.name
                 file_size = getattr(file_entity_info, 'contentSize', 0)
                 
-                # Check file size limit - be conservative with unknown sizes
-                if file_size and file_size > max_file_size:
+                # Check file size limit
+                if file_size > max_file_size:
                     extracted_metadata[file_id] = {
                         'file_name': file_name,
                         'file_id': file_id,
@@ -260,20 +259,6 @@ class MetadataFileAnalysisTool(BaseTool):
                         'file_size_mb': file_size / (1024*1024)
                     }
                     continue
-                
-                # For files with unknown size (contentSize=0), check file extension for potential large files
-                if file_size == 0:
-                    large_file_extensions = ['.raw', '.mzML', '.mzXML', '.wiff', '.d', '.baf', '.fid', '.ser', '.t2d', '.yep']
-                    file_ext = os.path.splitext(file_name.lower())[1]
-                    if file_ext in large_file_extensions:
-                        extracted_metadata[file_id] = {
-                            'file_name': file_name,
-                            'file_id': file_id,
-                            'skipped': True,
-                            'reason': f'Skipped likely large file type ({file_ext}) with unknown size',
-                            'file_size_mb': None
-                        }
-                        continue
                 
                 # Download file to temporary location
                 file_entity = self.syn.get(file_id, downloadLocation=tempfile.gettempdir())
@@ -285,7 +270,7 @@ class MetadataFileAnalysisTool(BaseTool):
                     extracted_metadata[file_id] = {
                         'file_name': file_name,
                         'file_id': file_id,
-                        'file_size_mb': file_size / (1024*1024),
+                        'file_size_mb': file_size / (1024*1024) if file_size else 0,
                         'metadata': metadata
                     }
                 
