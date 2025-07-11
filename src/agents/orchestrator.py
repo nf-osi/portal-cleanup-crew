@@ -2,8 +2,11 @@ from crewai import Agent, Crew, Process, Task
 import yaml
 from .uncontrolled_vocab_normalizer import get_uncontrolled_vocab_normalizer_agent
 from .freetext_corrector import get_freetext_corrector_agent
+from .github_issue_filer import GitHubIssueFilerAgent
+from .ontology_expert import OntologyExpert
 from .link_external_data import get_link_external_data_agent
 from .sync_external_metadata import get_sync_external_metadata_agent
+from .dataset_annotation_agent import get_dataset_annotation_agent
 from ..utils.llm_utils import get_llm
 import os
 import synapseclient
@@ -12,8 +15,6 @@ from ..workflows.correction import CorrectionWorkflow
 from ..workflows.freetext_correction import FreetextCorrectionWorkflow
 from ..workflows.uncontrolled_vocab_normalization import UncontrolledVocabNormalizationWorkflow
 
-from .github_issue_filer import GitHubIssueFilerAgent
-from .ontology_expert import OntologyExpert
 import getpass
 from ..tools.jsonld_tools import JsonLdGetValidValuesTool
 import subprocess
@@ -41,7 +42,8 @@ class OrchestratorAgent:
             "github_issue_filer": GitHubIssueFilerAgent(),
             "ontology_expert": OntologyExpert(llm=get_llm('ontology_expert', self.llm_config)),
             "link_external_data": get_link_external_data_agent(syn=self.syn),
-            "sync_external_metadata": get_sync_external_metadata_agent(syn=self.syn)
+            "sync_external_metadata": get_sync_external_metadata_agent(syn=self.syn),
+            "dataset_annotation_agent": get_dataset_annotation_agent(syn=self.syn)
         }
 
     def _login_to_synapse(self):
@@ -84,7 +86,8 @@ class OrchestratorAgent:
             print("3. Correct Free-Text Fields")
             print("4. Link External Dataset to Synapse (PRIDE, GEO, SRA, ENA, etc.)")
             print("5. Sync External Metadata to Synapse Annotations")
-            print("6. Exit")
+            print("6. Annotate Existing Synapse Dataset")
+            print("7. Exit")
 
             choice = input("Enter the number of your choice: ")
             if choice == '1':
@@ -98,9 +101,11 @@ class OrchestratorAgent:
             elif choice == '5':
                 self._run_sync_external_metadata_manual()
             elif choice == '6':
+                self._run_dataset_annotation_manual()
+            elif choice == '7':
                 break
             else:
-                print("Invalid choice. Please enter a number from 1 to 6.")
+                print("Invalid choice. Please enter a number from 1 to 7.")
 
     def _run_annotation_correction_manual(self):
         """
@@ -416,6 +421,104 @@ class OrchestratorAgent:
         else:
             print(f"Metadata source '{metadata_source}' is not yet supported.")
             print("Currently supported sources: PRIDE")
+
+    def _run_dataset_annotation_manual(self):
+        """
+        Manually runs the dataset annotation workflow.
+        """
+        print("\n--- Dataset Annotation Workflow ---")
+        print("This workflow analyzes an existing Synapse dataset and applies intelligent schema-based annotations.")
+        print("It will identify data files, extract metadata, detect the appropriate template, and apply annotations.")
+        
+        synapse_id = input("Enter the Synapse folder/dataset ID to analyze (e.g., syn12345678): ").strip()
+
+        if not synapse_id:
+            print("Synapse ID is required. Exiting workflow.")
+            return
+
+        # Validate Synapse ID format
+        if not synapse_id.startswith('syn'):
+            print("Warning: Synapse IDs typically start with 'syn'. Proceeding anyway...")
+
+        print(f"\nInitiating dataset analysis and annotation for {synapse_id}...")
+        print("This will:")
+        print("1. Analyze folder structure and classify files")
+        print("2. Extract external identifiers and metadata")
+        print("3. Determine appropriate metadata template")
+        print("4. Generate and apply schema-compliant annotations")
+        print("5. Save annotation summary as CSV")
+
+        try:
+            from crewai import Task, Crew, Process
+
+            task = Task(
+                description=f"""
+                Analyze and annotate Synapse dataset {synapse_id} with intelligent schema-based annotations.
+                
+                Follow these steps in order:
+                
+                1. ANALYZE FOLDER STRUCTURE:
+                   - Use Synapse Folder Analysis Tool to scan {synapse_id} recursively
+                   - Identify and classify all files (data vs metadata vs other)
+                   - Extract external identifiers from names, descriptions, and annotations
+                   - Get summary of file types, sizes, and existing annotations
+                
+                2. ANALYZE METADATA FILES:
+                   - If metadata files are found, use Metadata File Analysis Tool to extract structured information
+                   - Parse up to 5 metadata files to gather additional context
+                   - Extract key-value pairs, tabular data, or structured information
+                
+                3. DETERMINE APPROPRIATE TEMPLATE:
+                   - Use Template Detection Tool to get all available templates from the schema
+                   - Analyze file types, external identifiers, and metadata content
+                   - Based on the evidence, select the most appropriate metadata template
+                   - Consider file extensions, content types, external repository IDs, and metadata content
+                
+                4. GENERATE ANNOTATIONS:
+                   - Use Annotation Generation Tool with the chosen template
+                   - Get controlled vocabulary options for each template attribute
+                   - Map available metadata to appropriate schema attributes
+                   - Generate consistent annotations for all DATA files (not metadata files)
+                   - Ensure required attributes are filled and controlled vocabularies are used
+                
+                5. APPLY ANNOTATIONS:
+                   - Use apply_annotations to apply generated annotations to all data files in batch
+                   - Focus only on DATA files, not metadata or auxiliary files
+                   - Use the file classification from step 1 to determine which files to annotate
+                
+                6. SAVE DOCUMENTATION:
+                   - Use Annotation CSV Save Tool to create a local CSV record
+                   - Save to './dataset_annotations_{{timestamp}}.csv'
+                   - Include all generated annotations for documentation and review
+                
+                CRITICAL REQUIREMENTS:
+                - Only annotate DATA files, not metadata or auxiliary files
+                - Use schema-compliant controlled vocabulary values when available
+                - Fill all required template attributes
+                - Apply consistent annotations across similar files
+                - Base decisions on actual file analysis, not assumptions
+                - Let the available templates and metadata guide the annotation process
+                """,
+                agent=self.agents["dataset_annotation_agent"],
+                expected_output="A comprehensive summary of the dataset analysis and annotation process, including the number of files analyzed, template selected, annotations applied, and any issues encountered. Include the path to the saved CSV file with annotation details."
+            )
+            
+            crew = Crew(
+                agents=[self.agents["dataset_annotation_agent"]],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=True,
+                memory=False
+            )
+            
+            result = crew.kickoff()
+            print(f"\nDataset annotation workflow completed successfully!")
+            print(f"Result: {result}")
+            
+        except Exception as e:
+            print(f"Error running dataset annotation workflow: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _handle_follow_up_tasks(self, follow_up_tasks):
         """
