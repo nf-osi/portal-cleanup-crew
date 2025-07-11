@@ -306,6 +306,7 @@ class OrchestratorAgent:
                    - Organize files into logical subfolders by type and category
                    - Intelligently determine MIME types based on file extensions
                    - Include file sizes from metadata when available
+                   - Include MD5 checksums from metadata when available for integrity validation
                 7. Provide a summary of files linked and folder structure created
                 
                 CRITICAL EFFICIENCY RULES:

@@ -262,6 +262,7 @@ class ExternalFileLinkInput(BaseModel):
     annotations: Optional[dict] = Field(default=None, description="Optional annotations for the file")
     file_size: Optional[int] = Field(default=None, description="Optional file size in bytes")
     mimetype: Optional[str] = Field(default=None, description="Optional MIME type for the file (e.g., 'application/xml' for mzML, 'text/tab-separated-values' for TSV). If not provided, defaults to 'application/octet-stream'")
+    md5: Optional[str] = Field(default=None, description="Optional MD5 checksum for file integrity validation")
 
     class Config:
         arbitrary_types_allowed = True
@@ -274,7 +275,7 @@ class SynapseExternalFileLinkTool(BaseTool):
         "without downloading the file. This creates a 'symlink' to the external data. "
         "The LLM should intelligently determine appropriate MIME types based on file extensions "
         "(e.g., 'application/xml' for .mzML, 'text/tab-separated-values' for .tsv, etc.) "
-        "and provide file sizes from metadata when available."
+        "and provide file sizes and MD5 checksums from metadata when available for integrity validation."
     )
     args_schema: Type[BaseModel] = ExternalFileLinkInput
     syn: Optional[synapseclient.Synapse] = None
@@ -284,7 +285,7 @@ class SynapseExternalFileLinkTool(BaseTool):
         self.syn = syn
 
     def _run(self, external_url: str, file_name: str, parent_id: str, 
-             description: Optional[str] = None, annotations: Optional[dict] = None, file_size: Optional[int] = None, mimetype: Optional[str] = None) -> str:
+             description: Optional[str] = None, annotations: Optional[dict] = None, file_size: Optional[int] = None, mimetype: Optional[str] = None, md5: Optional[str] = None) -> str:
         """
         Creates an external file link in Synapse using external file handles.
         
@@ -296,6 +297,7 @@ class SynapseExternalFileLinkTool(BaseTool):
             annotations: Optional file annotations
             file_size: Optional file size in bytes
             mimetype: Optional MIME type for the file
+            md5: Optional MD5 checksum for file integrity validation
             
         Returns:
             Status message with file ID or error details
@@ -313,6 +315,10 @@ class SynapseExternalFileLinkTool(BaseTool):
             # Add file size if provided
             if file_size is not None:
                 file_handle_args['fileSize'] = file_size
+            
+            # Add MD5 checksum if provided
+            if md5 is not None:
+                file_handle_args['md5'] = md5
             
             file_handle = self.syn._createExternalFileHandle(**file_handle_args)
             
@@ -410,7 +416,7 @@ class SynapseBatchFolderCreationTool(BaseTool):
 
 class BatchExternalFileLinkInput(BaseModel):
     """Input for creating multiple external file links in Synapse."""
-    files: List[dict] = Field(description="List of file specifications, each containing 'external_url', 'file_name', 'parent_id', and optional 'description', 'file_size', 'mimetype'")
+    files: List[dict] = Field(description="List of file specifications, each containing 'external_url', 'file_name', 'parent_id', and optional 'description', 'file_size', 'mimetype', 'md5'")
 
     class Config:
         arbitrary_types_allowed = True
@@ -421,7 +427,7 @@ class SynapseBatchExternalFileLinkTool(BaseTool):
     description: str = (
         "Creates multiple Synapse File entities that link to external URLs (like FTP or HTTP) "
         "without downloading the files in a single batch operation. "
-        "The LLM should intelligently determine appropriate MIME types and file sizes for each file."
+        "The LLM should intelligently determine appropriate MIME types, file sizes, and MD5 checksums for each file."
     )
     args_schema: Type[BaseModel] = BatchExternalFileLinkInput
     syn: Optional[synapseclient.Synapse] = None
@@ -457,6 +463,7 @@ class SynapseBatchExternalFileLinkTool(BaseTool):
                 description = file_spec.get('description', None)
                 file_size = file_spec.get('file_size', None)
                 mimetype = file_spec.get('mimetype', 'application/octet-stream')
+                md5 = file_spec.get('md5', None)
                 
                 # Create an external file handle using the built-in synapse client method
                 file_handle_args = {
@@ -467,6 +474,10 @@ class SynapseBatchExternalFileLinkTool(BaseTool):
                 # Add file size if provided
                 if file_size is not None:
                     file_handle_args['fileSize'] = file_size
+                
+                # Add MD5 checksum if provided
+                if md5 is not None:
+                    file_handle_args['md5'] = md5
                 
                 file_handle = self.syn._createExternalFileHandle(**file_handle_args)
                 
