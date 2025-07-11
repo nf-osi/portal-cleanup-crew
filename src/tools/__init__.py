@@ -24,7 +24,9 @@ from .synapse_analysis_tools import (
     MetadataFileAnalysisTool,
     TemplateDetectionTool,
     AnnotationCSVSaveTool,
-    AnnotationGenerationTool
+    SingleAttributeAnnotationTool,
+    AnnotationCSVBuilderTool,
+    ApplyAnnotationsFromCSVTool
 )
 
 __all__ = [
@@ -49,5 +51,7 @@ __all__ = [
     'MetadataFileAnalysisTool',
     'TemplateDetectionTool',
     'AnnotationCSVSaveTool',
-    'AnnotationGenerationTool'
+    'SingleAttributeAnnotationTool',
+    'AnnotationCSVBuilderTool',
+    'ApplyAnnotationsFromCSVTool'
 ] 

@@ -627,141 +627,275 @@ class AnnotationCSVSaveTool(BaseTool):
             return f"Failed to save annotations to CSV: {str(e)}" 
 
 
-class AnnotationGenerationInput(BaseModel):
-    """Input for generating annotations based on template and available metadata."""
-    template_id: str = Field(description="The ID of the selected template (e.g., 'bts:MassSpecAssayTemplate')")
-    entity_count: int = Field(description="Number of entities to generate annotations for")
-    external_identifiers: dict = Field(default={}, description="External identifiers found (e.g., {'pride': ['PXD036000']})")
-    sample_metadata: dict = Field(default={}, description="Sample metadata extracted from files (e.g., treatment mappings)")
+class SingleAttributeAnnotationInput(BaseModel):
+    """Input for annotating a single attribute across multiple files."""
+    attribute_name: str = Field(description="Name of the attribute to annotate (e.g., 'Assay', 'DataType')")
+    attribute_description: str = Field(description="Description of what this attribute represents")
+    valid_values: List[str] = Field(default=[], description="List of valid controlled vocabulary values for this attribute")
+    file_names: List[str] = Field(description="List of file names to annotate")
+    available_metadata: dict = Field(default={}, description="Available metadata to help with annotation decisions")
     data_model_url: str = Field(
         default="https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld",
         description="URL or path to the JSON-LD data model"
     )
 
 
-class AnnotationGenerationTool(BaseTool):
-    name: str = "Annotation Generation Tool"
+class SingleAttributeAnnotationTool(BaseTool):
+    name: str = "Single Attribute Annotation Tool"
     description: str = (
-        "Generates schema-compliant annotation suggestions based on a template ID "
-        "and available metadata. Provides a simplified interface that returns "
-        "annotation templates and controlled vocabulary options for LLM decision-making."
+        "Annotates a single attribute across multiple files. Provides controlled "
+        "vocabulary options and metadata context to help make consistent annotation "
+        "decisions for one attribute at a time."
     )
-    args_schema: Type[BaseModel] = AnnotationGenerationInput
+    args_schema: Type[BaseModel] = SingleAttributeAnnotationInput
 
-    def _run(self, template_id: str, entity_count: int, external_identifiers: dict = {}, sample_metadata: dict = {}, data_model_url: str = "https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld") -> dict:
+    def _run(self, attribute_name: str, attribute_description: str, valid_values: List[str], file_names: List[str], available_metadata: dict = {}, data_model_url: str = "https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.jsonld") -> dict:
         """
-        Generates annotation options for LLM decision-making.
+        Provides annotation guidance for a single attribute.
         
         Args:
-            template_id: The template ID to use (e.g., 'bts:MassSpecAssayTemplate')
-            entity_count: Number of entities to generate annotations for
-            external_identifiers: External identifiers found in the dataset
-            sample_metadata: Sample-level metadata (e.g., treatment mappings)
+            attribute_name: Name of the attribute to annotate
+            attribute_description: Description of the attribute
+            valid_values: List of valid controlled vocabulary values
+            file_names: List of file names to annotate
+            available_metadata: Available metadata for decision making
             data_model_url: URL to JSON-LD data model
             
         Returns:
-            Dictionary with annotation templates and controlled vocabulary options
+            Dictionary with annotation guidance and options
         """
         try:
-            # Get template information from JSON-LD
-            try:
-                # Handle relative imports
-                try:
-                    from .jsonld_tools import JsonLdGetManifestsTool, _load_jsonld
-                except ImportError:
-                    from jsonld_tools import JsonLdGetManifestsTool, _load_jsonld
-                
-                # Load the JSON-LD to get template details
-                jsonld_data = _load_jsonld(data_model_url)
-                if not jsonld_data:
-                    return {"error": "Failed to load JSON-LD data model"}
-                
-                # Find the specific template
-                template = None
-                for item in jsonld_data.get('@graph', []):
-                    if item.get('@id') == template_id:
-                        template = item
-                        break
-                
-                if not template:
-                    return {"error": f"Template {template_id} not found in data model"}
-                
-                # Get template attributes
-                template_attributes = self._extract_template_attributes(jsonld_data, template)
-                
-            except Exception as e:
-                return {"error": f"Failed to load template information: {str(e)}"}
-            
-            # Get controlled vocabulary for key attributes
-            key_attributes = ['Assay', 'DataType', 'SampleType', 'Species', 'DiseaseFocus', 'FileFormat']
-            enriched_attributes = []
-            
-            for attr in template_attributes:
-                attr_label = attr.get('label', '')
-                enriched_attr = attr.copy()
-                
-                if attr_label in key_attributes:
-                    try:
-                        # Handle relative imports
-                        try:
-                            from .jsonld_tools import JsonLdGetValidValuesTool
-                        except ImportError:
-                            from jsonld_tools import JsonLdGetValidValuesTool
-                        
-                        jsonld_tool = JsonLdGetValidValuesTool()
-                        valid_values = jsonld_tool._run(data_model_url, attr_label)
-                        
-                        if isinstance(valid_values, list) and valid_values:
-                            enriched_attr['valid_values'] = valid_values[:20]  # Limit to first 20 for readability
-                        else:
-                            enriched_attr['valid_values'] = None
-                    except:
-                        enriched_attr['valid_values'] = None
-                else:
-                    enriched_attr['valid_values'] = None
-                
-                enriched_attributes.append(enriched_attr)
-            
             return {
-                "template": {
-                    "id": template_id,
-                    "label": template.get('rdfs:label', template_id),
-                    "description": template.get('rdfs:comment', 'No description available')
+                "attribute": {
+                    "name": attribute_name,
+                    "description": attribute_description,
+                    "has_controlled_vocabulary": len(valid_values) > 0,
+                    "valid_values": valid_values[:50] if valid_values else None  # Limit for readability
                 },
-                "attributes": enriched_attributes,
-                "entity_count": entity_count,
-                "external_identifiers": external_identifiers,
-                "sample_metadata": sample_metadata,
-                "annotation_instructions": self._generate_simple_instructions(
-                    template_id, entity_count, enriched_attributes
+                "files_to_annotate": file_names,
+                "file_count": len(file_names),
+                "available_metadata": available_metadata,
+                "annotation_guidance": self._generate_attribute_guidance(
+                    attribute_name, attribute_description, valid_values, available_metadata
                 )
             }
             
         except Exception as e:
-            return {"error": f"Failed to generate annotation options: {str(e)}"}
+            return {"error": f"Failed to generate annotation guidance: {str(e)}"}
 
-    def _generate_simple_instructions(self, template_id: str, entity_count: int, attributes: list) -> str:
-        """Generate simplified instructions for annotation generation."""
+    def _generate_attribute_guidance(self, attribute_name: str, description: str, valid_values: List[str], metadata: dict) -> str:
+        """Generate guidance for annotating a specific attribute."""
         
-        key_attrs = [attr for attr in attributes if attr.get('label') in 
-                    ['Assay', 'DataType', 'FileFormat', 'SampleType', 'Species', 'DiseaseFocus']]
+        has_vocab = len(valid_values) > 0
+        vocab_text = f"Choose from {len(valid_values)} controlled vocabulary options" if has_vocab else "Free text value"
         
-        instructions = f"""
-        ANNOTATION INSTRUCTIONS FOR {template_id}:
+        guidance = f"""
+        ANNOTATING ATTRIBUTE: {attribute_name}
         
-        Generate annotations for {entity_count} data files using this template.
+        DESCRIPTION: {description}
         
-        KEY ATTRIBUTES TO FOCUS ON:
-        {chr(10).join(f"- {attr['label']}: {attr.get('description', 'No description')}" for attr in key_attrs[:6])}
+        VALUE TYPE: {vocab_text}
         
-        GUIDELINES:
-        1. Use controlled vocabulary values when available (check 'valid_values' for each attribute)
-        2. Apply consistent study-level metadata across all files
-        3. Use sample-specific metadata where available
-        4. Derive missing values from external identifiers or file names when possible
-        5. Focus on the most important attributes first
+        INSTRUCTIONS:
+        1. Review the attribute description and understand what it represents
+        2. {"Use ONLY values from the controlled vocabulary list" if has_vocab else "Provide an appropriate text value"}
+        3. Apply consistent values across files when appropriate (study-level metadata)
+        4. Use file-specific values when they differ (sample-level metadata)
+        5. Use available metadata to inform decisions
+        6. If unsure, derive reasonable values from file names or external identifiers
         
-        Total attributes available: {len(attributes)}
+        AVAILABLE METADATA SOURCES:
+        - External identifiers: {list(metadata.get('external_identifiers', {}).keys())}
+        - Sample metadata: {list(metadata.get('sample_metadata', {}).keys())}
+        
+        OUTPUT FORMAT:
+        For each file, provide: {{"file_name": "value"}}
         """
         
-        return instructions 
+        return guidance
+
+
+class AnnotationCSVBuilderInput(BaseModel):
+    """Input for building annotation CSV incrementally."""
+    csv_path: str = Field(description="Path to the CSV file to create or update")
+    file_names: List[str] = Field(description="List of file names (creates initial CSV if new)")
+    attribute_name: str = Field(default="", description="Name of attribute column to add/update")
+    attribute_values: dict = Field(default={}, description="Dictionary mapping file_name to attribute value")
+    synapse_ids: dict = Field(default={}, description="Dictionary mapping file_name to synapse_id (for initial CSV)")
+
+
+class AnnotationCSVBuilderTool(BaseTool):
+    name: str = "Annotation CSV Builder Tool"
+    description: str = (
+        "Builds or updates an annotation CSV file incrementally. Can create initial "
+        "CSV with file names and IDs, then add attribute columns one at a time."
+    )
+    args_schema: Type[BaseModel] = AnnotationCSVBuilderInput
+
+    def _run(self, csv_path: str, file_names: List[str], attribute_name: str = "", attribute_values: dict = {}, synapse_ids: dict = {}) -> str:
+        """
+        Creates or updates annotation CSV file.
+        
+        Args:
+            csv_path: Path to CSV file
+            file_names: List of file names
+            attribute_name: Name of attribute to add (empty for initial CSV)
+            attribute_values: Values for the attribute {file_name: value}
+            synapse_ids: Synapse IDs for files {file_name: synapse_id}
+            
+        Returns:
+            Status message
+        """
+        try:
+            # Check if CSV exists
+            csv_exists = os.path.exists(csv_path)
+            
+            if not csv_exists and not synapse_ids:
+                return "Error: Cannot create new CSV without synapse_ids mapping"
+            
+            if not csv_exists:
+                # Create initial CSV with file names and synapse IDs
+                csv_data = []
+                for file_name in file_names:
+                    row = {
+                        'file_name': file_name,
+                        'synapse_id': synapse_ids.get(file_name, '')
+                    }
+                    csv_data.append(row)
+                
+                # Write initial CSV
+                with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                    fieldnames = ['file_name', 'synapse_id']
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(csv_data)
+                
+                return f"Created initial CSV with {len(csv_data)} files at {csv_path}"
+            
+            elif attribute_name and attribute_values:
+                # Add/update attribute column
+                # Read existing CSV
+                existing_data = []
+                with open(csv_path, 'r', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    fieldnames = reader.fieldnames
+                    existing_data = list(reader)
+                
+                # Update fieldnames if new attribute
+                if attribute_name not in fieldnames:
+                    fieldnames = list(fieldnames) + [attribute_name]
+                
+                # Update data with new attribute values
+                for row in existing_data:
+                    file_name = row['file_name']
+                    if file_name in attribute_values:
+                        row[attribute_name] = attribute_values[file_name]
+                    elif attribute_name not in row:
+                        row[attribute_name] = ''  # Default empty for missing values
+                
+                # Write updated CSV
+                with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(existing_data)
+                
+                return f"Updated CSV with attribute '{attribute_name}' for {len(attribute_values)} files"
+            
+            else:
+                return "Error: Must provide either synapse_ids (for new CSV) or attribute_name+attribute_values (for update)"
+                
+        except Exception as e:
+            return f"Failed to build/update CSV: {str(e)}"
+
+
+class ApplyAnnotationsFromCSVInput(BaseModel):
+    """Input for applying annotations from CSV to Synapse."""
+    csv_path: str = Field(description="Path to the completed annotation CSV file")
+    dry_run: bool = Field(default=True, description="If True, only show what would be applied without making changes")
+
+
+class ApplyAnnotationsFromCSVTool(BaseTool):
+    name: str = "Apply Annotations From CSV Tool"
+    description: str = (
+        "Reads a completed annotation CSV file and applies all annotations to "
+        "Synapse files. Supports dry-run mode to preview changes before applying."
+    )
+    args_schema: Type[BaseModel] = ApplyAnnotationsFromCSVInput
+    syn: Optional[synapseclient.Synapse] = None
+
+    def __init__(self, syn: synapseclient.Synapse, **kwargs):
+        super().__init__(**kwargs)
+        self.syn = syn
+
+    def _run(self, csv_path: str, dry_run: bool = True) -> str:
+        """
+        Applies annotations from CSV to Synapse files.
+        
+        Args:
+            csv_path: Path to annotation CSV file
+            dry_run: If True, only preview changes
+            
+        Returns:
+            Status message with results
+        """
+        try:
+            if not os.path.exists(csv_path):
+                return f"Error: CSV file not found at {csv_path}"
+            
+            # Read annotation CSV
+            annotations_data = []
+            with open(csv_path, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                annotations_data = list(reader)
+            
+            if not annotations_data:
+                return "Error: CSV file is empty"
+            
+            # Process annotations
+            results = []
+            annotation_columns = [col for col in annotations_data[0].keys() 
+                                if col not in ['file_name', 'synapse_id']]
+            
+            for row in annotations_data:
+                synapse_id = row.get('synapse_id', '')
+                file_name = row.get('file_name', '')
+                
+                if not synapse_id:
+                    results.append(f"❌ {file_name}: Missing synapse_id")
+                    continue
+                
+                # Collect non-empty annotations
+                annotations = {}
+                for col in annotation_columns:
+                    value = row.get(col, '').strip()
+                    if value:
+                        annotations[col] = value
+                
+                if not annotations:
+                    results.append(f"⚠️  {file_name}: No annotations to apply")
+                    continue
+                
+                if dry_run:
+                    annotation_preview = ', '.join(f"{k}='{v}'" for k, v in annotations.items())
+                    results.append(f"📋 {file_name} ({synapse_id}): {annotation_preview}")
+                else:
+                    # Apply annotations to Synapse
+                    try:
+                        if self.syn:
+                            entity = self.syn.get(synapse_id, downloadFile=False)
+                            entity.annotations.update(annotations)
+                            self.syn.store(entity, forceVersion=False)
+                            results.append(f"✅ {file_name}: Applied {len(annotations)} annotations")
+                        else:
+                            results.append(f"❌ {file_name}: Synapse client not available")
+                    except Exception as e:
+                        results.append(f"❌ {file_name}: Failed to apply annotations - {str(e)}")
+            
+            # Summary
+            mode = "DRY RUN - " if dry_run else ""
+            summary = f"{mode}Processed {len(annotations_data)} files with {len(annotation_columns)} attributes"
+            
+            return f"{summary}\n\n" + '\n'.join(results)
+            
+        except Exception as e:
+            return f"Failed to apply annotations from CSV: {str(e)}" 

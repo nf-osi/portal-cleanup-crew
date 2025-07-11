@@ -5,7 +5,9 @@ from src.tools.synapse_analysis_tools import (
     MetadataFileAnalysisTool,
     TemplateDetectionTool,
     AnnotationCSVSaveTool,
-    AnnotationGenerationTool
+    SingleAttributeAnnotationTool,
+    AnnotationCSVBuilderTool,
+    ApplyAnnotationsFromCSVTool
 )
 from src.tools.jsonld_tools import JsonLdGetValidValuesTool, JsonLdGetManifestsTool
 from src.tools.synapse_tools import (
@@ -43,18 +45,25 @@ def get_dataset_annotation_agent(syn: synapseclient.Synapse):
             "- Determining appropriate metadata templates based on data type and content\n"
             "- Applying schema-compliant annotations using controlled vocabularies\n"
             "- Creating documentation of annotation decisions for reproducibility\n\n"
-            "You approach each dataset systematically, first understanding what data is present, "
-            "then gathering all available metadata, determining the most appropriate annotation "
-            "template, and finally applying consistent, high-quality annotations to data files only. "
-            "You are meticulous about using controlled vocabularies and ensuring all annotations "
-            "comply with the specified data model. You focus on DATA files for annotation, "
-            "distinguishing them from metadata and auxiliary files."
+            "You approach each dataset systematically with an iterative workflow:\n"
+            "1. Analyze the folder structure and classify files\n"
+            "2. Extract metadata from available files\n"
+            "3. Determine the most appropriate annotation template\n"
+            "4. Work through template attributes ONE AT A TIME\n"
+            "5. Build an annotation CSV incrementally, column by column\n"
+            "6. Apply all annotations to Synapse files at the end\n\n"
+            "Your iterative approach ensures comprehensive coverage of all template attributes "
+            "without overwhelming complexity. You focus on DATA files for annotation, "
+            "distinguishing them from metadata and auxiliary files. You build the annotation "
+            "CSV as you work, creating a clear audit trail of your decisions."
         ),
         tools=[
             SynapseFolderAnalysisTool(syn=syn),
             MetadataFileAnalysisTool(syn=syn),
             TemplateDetectionTool(),
-            AnnotationGenerationTool(),
+            SingleAttributeAnnotationTool(),
+            AnnotationCSVBuilderTool(),
+            ApplyAnnotationsFromCSVTool(syn=syn),
             JsonLdGetValidValuesTool(),
             JsonLdGetManifestsTool(),
             SynapseBatchAnnotationTool(syn=syn),
@@ -92,18 +101,25 @@ class DatasetAnnotationAgent(Agent):
                 "- Determining appropriate metadata templates based on data type and content\n"
                 "- Applying schema-compliant annotations using controlled vocabularies\n"
                 "- Creating documentation of annotation decisions for reproducibility\n\n"
-                "You approach each dataset systematically, first understanding what data is present, "
-                "then gathering all available metadata, determining the most appropriate annotation "
-                "template, and finally applying consistent, high-quality annotations to data files only. "
-                "You are meticulous about using controlled vocabularies and ensuring all annotations "
-                "comply with the specified data model. You focus on DATA files for annotation, "
-                "distinguishing them from metadata and auxiliary files."
+                "You approach each dataset systematically with an iterative workflow:\n"
+                "1. Analyze the folder structure and classify files\n"
+                "2. Extract metadata from available files\n"
+                "3. Determine the most appropriate annotation template\n"
+                "4. Work through template attributes ONE AT A TIME\n"
+                "5. Build an annotation CSV incrementally, column by column\n"
+                "6. Apply all annotations to Synapse files at the end\n\n"
+                "Your iterative approach ensures comprehensive coverage of all template attributes "
+                "without overwhelming complexity. You focus on DATA files for annotation, "
+                "distinguishing them from metadata and auxiliary files. You build the annotation "
+                "CSV as you work, creating a clear audit trail of your decisions."
             ),
             tools=[
                 SynapseFolderAnalysisTool(syn=syn),
                 MetadataFileAnalysisTool(syn=syn),
                 TemplateDetectionTool(),
-                AnnotationGenerationTool(),
+                SingleAttributeAnnotationTool(),
+                AnnotationCSVBuilderTool(),
+                ApplyAnnotationsFromCSVTool(syn=syn),
                 JsonLdGetValidValuesTool(),
                 JsonLdGetManifestsTool(),
                 SynapseBatchAnnotationTool(syn=syn),
