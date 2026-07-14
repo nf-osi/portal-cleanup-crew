@@ -1,1 +1,0 @@
-AUTHENTICATION_SECTION_NAME = "authentication"
