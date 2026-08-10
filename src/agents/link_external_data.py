@@ -1,5 +1,4 @@
 from crewai import Agent
-from crewai_tools import CodeInterpreterTool
 from src.utils.llm_utils import get_llm
 from src.tools.pride_tools import (
     PrideDatasetMetadataTool, 
@@ -73,8 +72,7 @@ def get_link_external_data_agent(syn: synapseclient.Synapse):
             SynapseExternalFileLinkTool(syn=syn),
             SynapseBatchFolderCreationTool(syn=syn),
             SynapseBatchExternalFileLinkTool(syn=syn),
-            SynapsePythonCodeExecutorTool(syn=syn),
-            CodeInterpreterTool()
+            SynapsePythonCodeExecutorTool(syn=syn)
         ],
         llm=get_llm(),
         verbose=True,
@@ -133,8 +131,7 @@ class LinkExternalDataAgent(Agent):
                 SynapseExternalFileLinkTool(syn=syn),
                 SynapseBatchFolderCreationTool(syn=syn),
                 SynapseBatchExternalFileLinkTool(syn=syn),
-                SynapsePythonCodeExecutorTool(syn=syn),
-                CodeInterpreterTool()
+                SynapsePythonCodeExecutorTool(syn=syn)
             ],
             llm=get_llm(),
             verbose=True,
