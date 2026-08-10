@@ -20,6 +20,10 @@ tqdm==4.70.0
 # Held on 2.x: the code is written against the 2.x API, not pandas 3.
 pandas==2.3.3
 
+# Required by src/tools/geo_tools.py. Like pandas, this was imported but never
+# declared, so a clean install had no way to get it.
+GEOparse==2.0.4
+
 # Security floors for transitive dependencies (SEC-489).
 #
 # crewai and synapseclient declare loose lower bounds on these, so a resolver

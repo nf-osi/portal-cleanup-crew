@@ -1,6 +1,7 @@
 from crewai import Agent
 from src.tools.jsonld_tools import JsonLdGetValidValuesTool
 from src.tools.synapse_tools import SynapsePythonCodeExecutorTool
+from src.utils.llm_utils import get_llm
 
 def get_annotation_corrector_agent(llm, syn):
     """
@@ -23,4 +24,11 @@ def get_annotation_corrector_agent(llm, syn):
         allow_delegation=False,
         tools=[jsonld_tool, synapse_tool],
         llm=llm,
-    ) 
+    )
+
+def get_annotation_corrector_agent_from_config(syn):
+    """
+    Creates an agent responsible for correcting Synapse annotations using a configured LLM.
+    """
+    llm = get_llm('annotation_corrector')
+    return get_annotation_corrector_agent(llm=llm, syn=syn) 

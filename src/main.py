@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import yaml
+import argparse
 
 # Add the project root to the Python path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -20,8 +21,10 @@ def main():
         
         # Correctly parse the nested configuration
         ac_config = config.get('annotation_corrector', {})
+        fc_config = config.get('freetext_correction', {})
+        oe_config = config.get('ontology_expert', {})
         
-        orchestrator = OrchestratorAgent(ac_config=ac_config)
+        orchestrator = OrchestratorAgent(config=config)
         orchestrator.run()
     except (ValueError, FileNotFoundError) as e:
         print(f"\nError: {e}")

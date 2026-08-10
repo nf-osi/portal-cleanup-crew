@@ -12,6 +12,7 @@ import synapseclient
 import pandas as pd
 import json
 from src.utils.cli_utils import prompt_for_view_and_column
+from src.utils.llm_utils import crew_kickoff_with_retry
 
 class UncontrolledVocabNormalizationWorkflow:
     def __init__(self, syn, llm, views, orchestrator=None):
@@ -139,7 +140,8 @@ class UncontrolledVocabNormalizationWorkflow:
             process=Process.sequential
         )
         
-        raw_output = crew.kickoff().raw
+        result = crew_kickoff_with_retry(crew, context="vocabulary normalization")
+        raw_output = result.raw
         all_corrections = self._parse_agent_output(raw_output)
 
         # Filter out corrections where the original and corrected values are the same
@@ -510,7 +512,8 @@ class UncontrolledVocabNormalizationWorkflow:
             process=Process.sequential
         )
         
-        raw_output = crew.kickoff().raw
+        result = crew_kickoff_with_retry(crew, context="vocabulary normalization (full workflow)")
+        raw_output = result.raw
         all_corrections = self._parse_agent_output(raw_output)
 
         # Filter out corrections where the original and corrected values are the same

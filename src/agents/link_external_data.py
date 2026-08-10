@@ -52,7 +52,7 @@ def get_link_external_data_agent(syn: synapseclient.Synapse):
             "tools and workflows to use based on the dataset identifier provided. You ALWAYS prefer "
             "ENA (European Nucleotide Archive) over SRA when both are available, as ENA provides "
             "superior direct access to raw FASTQ data. For unknown repository types (like Zenodo DOIs, "
-            "institutional repositories, EBI Metagenomics, etc.), you can use the Code Interpreter Tool "
+            "institutional repositories, EBI Metagenomics, etc.), you can use the Synapse Python Code Executor Tool "
             "to write and execute custom Python code with external HTTP requests to fetch metadata and "
             "file information. When dealing with sequencing data, you prioritize finding ENA accessions "
             "over SRA accessions. You focus on efficient file linking, raw data preservation, and "
@@ -74,7 +74,7 @@ def get_link_external_data_agent(syn: synapseclient.Synapse):
             SynapseBatchExternalFileLinkTool(syn=syn),
             SynapsePythonCodeExecutorTool(syn=syn)
         ],
-        llm=get_llm(),
+        llm=get_llm("link_external_data"),
         verbose=True,
         allow_delegation=False
     )
@@ -111,7 +111,7 @@ class LinkExternalDataAgent(Agent):
                 "tools and workflows to use based on the dataset identifier provided. You ALWAYS prefer "
                 "ENA (European Nucleotide Archive) over SRA when both are available, as ENA provides "
                 "superior direct access to raw FASTQ data. For unknown repository types (like Zenodo DOIs, "
-                "institutional repositories, EBI Metagenomics, etc.), you can use the Code Interpreter Tool "
+                "institutional repositories, EBI Metagenomics, etc.), you can use the Synapse Python Code Executor Tool "
                 "to write and execute custom Python code with external HTTP requests to fetch metadata and "
                 "file information. When dealing with sequencing data, you prioritize finding ENA accessions "
                 "over SRA accessions. You focus on efficient file linking, raw data preservation, and "
@@ -133,7 +133,7 @@ class LinkExternalDataAgent(Agent):
                 SynapseBatchExternalFileLinkTool(syn=syn),
                 SynapsePythonCodeExecutorTool(syn=syn)
             ],
-            llm=get_llm(),
+            llm=get_llm("link_external_data"),
             verbose=True,
             allow_delegation=False
         ) 

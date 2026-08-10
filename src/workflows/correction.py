@@ -2,7 +2,7 @@ from crewai import Agent, Crew, Process, Task
 import yaml
 from ..agents.annotation_corrector import get_annotation_corrector_agent
 from ..agents.github_issue_filer import GitHubIssueFilerAgent
-from src.utils.llm_utils import get_llm
+from src.utils.llm_utils import get_llm, crew_kickoff_with_retry
 import os
 import synapseclient
 import json
@@ -90,7 +90,7 @@ class CorrectionWorkflow:
                 process=Process.sequential,
                 verbose=True
             )
-            plan_output = crew.kickoff()
+            plan_output = crew_kickoff_with_retry(crew, context="annotation correction plan")
             
             print(f"Agent's Raw Plan:\n{plan_output.raw}")
 
