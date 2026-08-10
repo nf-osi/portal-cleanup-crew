@@ -11,6 +11,7 @@ import time
 import synapseclient
 import pandas as pd
 from src.utils.cli_utils import prompt_for_view_and_column
+from src.utils.llm_utils import crew_kickoff_with_retry
 
 class FreetextCorrectionWorkflow:
     def __init__(self, syn, llm, views, freetext_settings=None):
@@ -62,7 +63,8 @@ class FreetextCorrectionWorkflow:
             process=Process.sequential,
         )
 
-        selected_column = crew.kickoff().raw
+        result = crew_kickoff_with_retry(crew, context="column selection")
+        selected_column = result.raw
         
         # Validate that the agent returned a valid column name
         if selected_column.strip() in all_columns:
@@ -174,24 +176,13 @@ class FreetextCorrectionWorkflow:
             )
             
             corrected_text = value # Default to original value
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    corrected_text_raw = crew.kickoff().raw
-                    corrected_text = self._parse_agent_output(corrected_text_raw)
-                    break  # Success
-                except Exception as e:
-                    # Catch network errors and retry
-                    if "RemoteProtocolError" in str(e) or "peer closed connection" in str(e):
-                        if attempt < max_retries - 1:
-                            print(f"\nNetwork error processing item. Retrying in 2 seconds... (Attempt {attempt + 2}/{max_retries})")
-                            time.sleep(2)
-                        else:
-                            print(f"\nFailed to process an item after {max_retries} attempts due to a network error. Skipping.")
-                    else:
-                        # For non-network errors, print and skip immediately
-                        print(f"\nAn unexpected error occurred: {e}. Skipping this item.")
-                        break
+            try:
+                result = crew_kickoff_with_retry(crew, context="freetext correction")
+                corrected_text_raw = result.raw
+                corrected_text = self._parse_agent_output(corrected_text_raw)
+            except Exception as e:
+                print(f"\nFailed to process text correction after retries: {e}. Skipping this item.")
+                corrected_text = value  # Keep original value on failure
 
             if corrected_text.strip() != value.strip():
                 # Only prompt for review if a meaningful diff exists

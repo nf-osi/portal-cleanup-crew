@@ -22,50 +22,40 @@ class GitHubIssueFilerAgent:
             print("Please follow the instructions here to install and authenticate: https://cli.github.com/")
             raise ConnectionError("GitHub CLI not found or not authenticated.")
 
-    def _format_issue_body(self, corrections, column_name):
-        """Formats the list of corrections into a markdown string for the issue body."""
+    def _format_new_term_issue_body(self, new_term_suggestions, column_name):
+        """Formats the list of new term suggestions into a markdown string for the issue body."""
         body = (
-            f"Automated vocabulary normalization suggestions for the column **`{column_name}`**.\n\n"
-            "These are standardization suggestions to improve data consistency. "
-            "A human should review these changes and apply them to the relevant files in this repository.\n\n"
+            f"The following new ontology terms have been proposed for the **`{column_name}`** attribute in the data model.\n\n"
+            "This suggestion was approved during the data curation process. Please review and, if appropriate, add the new term(s) to the data model.\n\n"
             "---"
         )
-        for correction in corrections:
-            # Convert study_ids to strings and filter out NaN values
-            study_ids_clean = []
-            for study_id in correction['study_ids']:
-                if study_id is not None and str(study_id) != 'nan':
-                    study_ids_clean.append(str(study_id))
-            
-            study_ids_str = ", ".join(study_ids_clean) if study_ids_clean else "N/A"
+        for suggestion in new_term_suggestions:
             body += (
-                f"\n\n### Normalization for Study ID(s): `{study_ids_str}`\n"
-                f"- **Column**: `{column_name}`\n"
-                f"- **Action**: The following normalization is proposed:\n"
-                "\n```diff\n"
-                f"- {correction['original']}\n"
-                f"+ {correction['corrected']}\n"
-                "```"
+                f"\n\n### Suggestion for Original Term: `{suggestion['original_term']}`\n"
+                f"- **Suggested Term**: `{suggestion['standard_term']}`\n"
+                f"- **Suggested URI**: `{suggestion['uri']}`"
             )
         return body
 
     def run(self, task):
         """
         Runs the GitHub issue filing task.
-        - Formats the issue content
+        - Formats the issue content for new term suggestions
         - Creates a new issue using the 'gh' CLI tool
         """
-        repo_url = task['repo_url']
-        corrections = task['corrections']
-        
-        # Get the column name from the first correction
-        column_name = corrections[0]['column_name'] if corrections and 'column_name' in corrections[0] else 'unknown'
+        repo_url = task.get('repo_url')
+        column_name = task.get('column_name')
+        new_term_suggestions = task.get('new_term_suggestions')
 
-        print(f"\n--- GitHub Issue Filing Workflow ---")
-        print(f"Received task to file an issue for {len(corrections)} corrections in {repo_url}")
+        if not all([repo_url, column_name, new_term_suggestions]):
+            print("Error: Task is missing required fields ('repo_url', 'column_name', 'new_term_suggestions').")
+            return
 
-        issue_title = f"Vocabulary normalization for column '{column_name}'"
-        issue_body = self._format_issue_body(corrections, column_name)
+        print(f"\n--- GitHub Issue Filing Workflow for New Terms ---")
+        print(f"Received task to file an issue for {len(new_term_suggestions)} new terms in '{column_name}'.")
+
+        issue_title = f"New Term Suggestions for '{column_name}'"
+        issue_body = self._format_new_term_issue_body(new_term_suggestions, column_name)
 
         try:
             command = [
@@ -75,7 +65,6 @@ class GitHubIssueFilerAgent:
                 "--repo", repo_url
             ]
             
-            # Use subprocess.run to execute the command
             result = subprocess.run(command, check=True, capture_output=True, text=True)
             
             issue_url = result.stdout.strip()
@@ -87,6 +76,37 @@ class GitHubIssueFilerAgent:
             print(f"Stderr: {e.stderr}")
         except Exception as e:
             print(f"An unexpected error occurred: {e}")
-            return
-        
-        print("\nGitHub issue filing process finished.") 
+            
+        print("\nGitHub issue filing process finished.")
+
+    def file_issue(self, title, body, repo):
+        """
+        Files a generic GitHub issue with the provided title, body, and repo.
+        This is a simpler interface for general issue filing.
+        """
+        print(f"\n--- Filing GitHub Issue ---")
+        print(f"Title: {title}")
+        print(f"Repository: {repo}")
+
+        try:
+            command = [
+                "gh", "issue", "create",
+                "--title", title,
+                "--body", body,
+                "--repo", repo
+            ]
+            
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+            
+            issue_url = result.stdout.strip()
+            print(f"\n✅ Successfully created GitHub issue: {issue_url}")
+            return issue_url
+
+        except subprocess.CalledProcessError as e:
+            print(f"\n❌ Failed to create GitHub issue.")
+            print(f"Command failed with exit code {e.returncode}.")
+            print(f"Stderr: {e.stderr}")
+            return None
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            return None

@@ -5,9 +5,11 @@ from .freetext_corrector import get_freetext_corrector_agent
 from .github_issue_filer import GitHubIssueFilerAgent
 from .ontology_expert import OntologyExpert
 from .link_external_data import get_link_external_data_agent
-from .sync_external_metadata import get_sync_external_metadata_agent
+from .pride_sync_agent import get_pride_sync_agent
+from .annotation_corrector import get_annotation_corrector_agent_from_config
+
 from .dataset_annotation_agent import get_dataset_annotation_agent
-from ..utils.llm_utils import get_llm
+from ..utils.llm_utils import get_llm, crew_kickoff_with_retry
 import os
 import synapseclient
 import json
@@ -42,8 +44,9 @@ class OrchestratorAgent:
             "github_issue_filer": GitHubIssueFilerAgent(),
             "ontology_expert": OntologyExpert(llm=get_llm('ontology_expert', self.llm_config)),
             "link_external_data": get_link_external_data_agent(syn=self.syn),
-            "sync_external_metadata": get_sync_external_metadata_agent(syn=self.syn),
-            "dataset_annotation_agent": get_dataset_annotation_agent(syn=self.syn)
+            "dataset_annotation_agent": get_dataset_annotation_agent(syn=self.syn),
+            "pride_sync_agent": get_pride_sync_agent(syn=self.syn),
+            "annotation_corrector": get_annotation_corrector_agent_from_config(syn=self.syn)
         }
 
     def _login_to_synapse(self):
@@ -85,9 +88,8 @@ class OrchestratorAgent:
             print("2. Standardize Uncontrolled Terms (e.g., investigator names)")
             print("3. Correct Free-Text Fields")
             print("4. Link External Dataset to Synapse (PRIDE, GEO, SRA, ENA, etc.)")
-            print("5. Sync External Metadata to Synapse Annotations")
-            print("6. Annotate Existing Synapse Dataset")
-            print("7. Exit")
+            print("5. Annotate Existing Synapse Dataset")
+            print("6. Exit")
 
             choice = input("Enter the number of your choice: ")
             if choice == '1':
@@ -99,13 +101,11 @@ class OrchestratorAgent:
             elif choice == '4':
                 self._run_link_external_data_manual()
             elif choice == '5':
-                self._run_sync_external_metadata_manual()
-            elif choice == '6':
                 self._run_dataset_annotation_manual()
-            elif choice == '7':
+            elif choice == '6':
                 break
             else:
-                print("Invalid choice. Please enter a number from 1 to 7.")
+                print("Invalid choice. Please enter a number from 1 to 6.")
 
     def _run_annotation_correction_manual(self):
         """
@@ -340,7 +340,7 @@ class OrchestratorAgent:
             )
 
             print("\nExecuting external data linking workflow...")
-            result = crew.kickoff()
+            result = crew_kickoff_with_retry(crew, context="external data linking workflow")
             
             print("\n" + "="*60)
             print("EXTERNAL DATA LINKING WORKFLOW COMPLETED")
@@ -351,76 +351,7 @@ class OrchestratorAgent:
             print(f"\nError during external data linking workflow: {e}")
             print("Please check your inputs and try again.")
 
-    def _run_sync_external_metadata_manual(self):
-        """
-        Manually runs the External Metadata to Synapse Annotations sync workflow.
-        """
-        print("\n--- External Metadata to Synapse Annotations Sync Workflow ---")
-        print("This workflow will apply external metadata (such as from PRIDE, GEO, etc.) as")
-        print("schema-compliant annotations to existing Synapse entities.")
-        
-        metadata_source = input("Enter the metadata source (e.g., 'PRIDE', 'GEO'): ").strip().upper()
-        
-        if metadata_source == 'PRIDE':
-            pride_id = input("Enter the PRIDE dataset ID (e.g., PXD001234): ").strip()
-            target_synapse_folder = input("Enter the Synapse folder ID containing the files to annotate: ").strip()
-            
-            if not pride_id or not target_synapse_folder:
-                print("PRIDE ID and Synapse folder ID are required. Exiting workflow.")
-                return
-            
-            print(f"\nApplying PRIDE metadata from {pride_id} to files in {target_synapse_folder}...")
-            
-            try:
-                from crewai import Task, Crew, Process
-                
-                task = Task(
-                    description=f"""
-                    Apply PRIDE dataset metadata as schema-compliant annotations to Synapse entities.
-                    
-                    Steps:
-                    1. Fetch metadata for PRIDE dataset {pride_id}
-                    2. Use PRIDE Annotation Mapper to generate schema-compliant annotations:
-                       - Map PRIDE metadata to valid schema attributes
-                       - Use data model URL: {self.data_model_path}
-                       - Ensure all annotation values are valid according to the schema
-                    3. Find all file entities in Synapse folder {target_synapse_folder} (including subfolders)
-                    4. Use apply_annotations to apply the mapped annotations to ALL files in ONE batch operation
-                    5. Provide a summary of annotations applied
-                    
-                    CRITICAL REQUIREMENTS:
-                    - ONLY use schema-valid annotation values
-                    - Do NOT hardcode annotation values - always validate against schema
-                    - Apply annotations in batch for efficiency
-                    - Provide detailed summary of what annotations were applied
-                    """,
-                    agent=self.agents["sync_external_metadata"],
-                    expected_output="A detailed summary of the external metadata sync operation including the annotations generated, files annotated, and any schema validation issues encountered."
-                )
-                
-                crew = Crew(
-                    agents=[self.agents["sync_external_metadata"]],
-                    tasks=[task],
-                    process=Process.sequential,
-                    verbose=True,
-                    memory=False
-                )
-                
-                print("\nExecuting external metadata sync workflow...")
-                result = crew.kickoff()
-                
-                print("\n" + "="*60)
-                print("EXTERNAL METADATA SYNC WORKFLOW COMPLETED")
-                print("="*60)
-                print(f"Result: {result}")
-                
-            except Exception as e:
-                print(f"\nError during external metadata sync workflow: {e}")
-                print("Please check your inputs and try again.")
-        
-        else:
-            print(f"Metadata source '{metadata_source}' is not yet supported.")
-            print("Currently supported sources: PRIDE")
+
 
     def _run_dataset_annotation_manual(self):
         """
@@ -440,6 +371,16 @@ class OrchestratorAgent:
         if not synapse_id.startswith('syn'):
             print("Warning: Synapse IDs typically start with 'syn'. Proceeding anyway...")
 
+        # Ask about ignoring existing annotations
+        print("\n--- Annotation Options ---")
+        ignore_existing = input("Do you want to IGNORE existing annotations on files? (y/N): ").strip().lower()
+        ignore_existing_annotations = ignore_existing in ['y', 'yes']
+        
+        if ignore_existing_annotations:
+            print("✅ Will ignore existing annotations (useful when current annotations are incorrect)")
+        else:
+            print("ℹ️  Will consider existing annotations as context")
+
         print(f"\nInitiating dataset analysis and annotation for {synapse_id}...")
         print("This will:")
         print("1. Analyze folder structure and classify files")
@@ -453,57 +394,33 @@ class OrchestratorAgent:
 
             task = Task(
                 description=f"""
-                Analyze and annotate Synapse dataset {synapse_id} with intelligent schema-based annotations.
+                Analyze and annotate the Synapse dataset {synapse_id} using the JSON-LD schema at {self.data_model_path}.
                 
-                Follow these steps in order:
+                IMPORTANT: {'IGNORE existing annotations on files - they may be incorrect and should not influence decisions.' if ignore_existing_annotations else 'Consider existing annotations as context, but verify their accuracy.'}
                 
-                1. ANALYZE FOLDER STRUCTURE:
-                   - Use Synapse Folder Analysis Tool to scan {synapse_id} recursively
-                   - Identify and classify all files (data vs metadata vs other)
-                   - Extract external identifiers from names, descriptions, and annotations
-                   - Get summary of file types, sizes, and existing annotations
+                Your approach should be:
+                1. Analyze the dataset structure to understand what files are present
+                   {'- Use ignore_existing_annotations=True when calling Synapse Folder Analysis Tool' if ignore_existing_annotations else '- Include existing annotations in analysis'}
+                2. Choose the best processing strategy based on complexity:
+                   - Simple datasets: process all files together
+                   - Complex datasets with many folders/identifiers: process incrementally folder by folder
+                3. For complex datasets with folders: Process ONE folder at a time (never batch):
+                   - Pick one folder (e.g., SRR21492342)
+                   - Extract biological identifier from that folder name
+                   - Use bioregistry tools to get ACTUAL metadata for that specific identifier
+                   - Try to get displayNames from schema, but proceed with defaults if tools fail
+                   - Build annotations using correct field names (e.g., 'readPair' not 'ReadPair')  
+                   - ACTUALLY apply annotations to that ONE folder using 'annotate_folder' tool
+                   - Move to the next folder and repeat until all folders are processed
+                4. CRITICAL: Never try to process multiple folders at once or create large batches
+                   ALWAYS use 'annotate_folder' tool to actually annotate files - don't just plan!
                 
-                2. ANALYZE METADATA FILES:
-                   - If metadata files are found, use Metadata File Analysis Tool to extract structured information
-                   - Parse up to 5 metadata files to gather additional context
-                   - Extract key-value pairs, tabular data, or structured information
-                
-                3. DETERMINE APPROPRIATE TEMPLATE:
-                   - Use Template Detection Tool to get all available templates from the schema
-                   - Use data model URL: {self.data_model_path}
-                   - Analyze file types, external identifiers, and metadata content
-                   - Based on the evidence, select the most appropriate metadata template
-                   - Consider file extensions, content types, external repository IDs, and metadata content
-                
-                4. GENERATE ANNOTATIONS:
-                   - Use Annotation Generation Tool with the chosen template
-                   - Use data model URL: {self.data_model_path}
-                   - Get controlled vocabulary options for each template attribute
-                   - Map available metadata to appropriate schema attributes
-                   - Generate consistent annotations for all DATA files (not metadata files)
-                   - Ensure required attributes are filled and controlled vocabularies are used
-                
-                5. APPLY ANNOTATIONS:
-                   - Use apply_annotations to apply generated annotations to all data files in batch
-                   - Focus only on DATA files, not metadata or auxiliary files
-                   - Use the file classification from step 1 to determine which files to annotate
-                
-                6. SAVE DOCUMENTATION:
-                   - Use Annotation CSV Save Tool to create a local CSV record
-                   - Save to './dataset_annotations_{{timestamp}}.csv'
-                   - Include all generated annotations for documentation and review
-                
-                CRITICAL REQUIREMENTS:
-                - Only annotate DATA files, not metadata or auxiliary files
-                - Use schema-compliant controlled vocabulary values when available
-                - Fill all required template attributes
-                - Apply consistent annotations across similar files
-                - Base decisions on actual file analysis, not assumptions
-                - Let the available templates and metadata guide the annotation process
-                - ALWAYS use data model URL: {self.data_model_path} for ALL JSON-LD operations
+                Focus only on data files and use exact displayName from the JSON-LD schema for all 
+                attribute names. Always fetch actual metadata rather than making assumptions. 
+                Process folder by folder to ensure accuracy and avoid system overload.
                 """,
                 agent=self.agents["dataset_annotation_agent"],
-                expected_output="A comprehensive summary of the dataset analysis and annotation process, including the number of files analyzed, template selected, annotations applied, and any issues encountered. Include the path to the saved CSV file with annotation details."
+                expected_output="A summary of the annotation process including the template used, number of files annotated, and any key annotations applied."
             )
             
             crew = Crew(
@@ -514,12 +431,21 @@ class OrchestratorAgent:
                 memory=False
             )
             
-            result = crew.kickoff()
+            result = crew_kickoff_with_retry(crew, context="dataset annotation workflow")
             print(f"\nDataset annotation workflow completed successfully!")
             print(f"Result: {result}")
             
+        except ValueError as e:
+            # Handle the specific error from crew_kickoff_with_retry
+            if "Invalid response from LLM call" in str(e):
+                print(f"\n❌ Dataset annotation workflow failed due to a persistent issue with the language model.")
+                print(f"   Please try again later. If the problem continues, check the model configuration or API status.")
+                print(f"   Details: {e}")
+            else:
+                # Re-raise other ValueErrors
+                raise
         except Exception as e:
-            print(f"Error running dataset annotation workflow: {e}")
+            print(f"An unexpected error occurred during the dataset annotation workflow: {e}")
             import traceback
             traceback.print_exc()
 
@@ -585,7 +511,7 @@ class OrchestratorAgent:
             memory=False
         )
         
-        result = crew.kickoff()
+        result = crew_kickoff_with_retry(crew, context="ontology expert consultation")
         
         try:
             # The result from crew.kickoff() is a CrewOutput object, we need the raw string from it

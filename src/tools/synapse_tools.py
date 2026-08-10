@@ -1,12 +1,14 @@
 import synapseclient
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
-from typing import Type, Optional, List
+from typing import Type, Optional, List, Any, Dict
 import io
 import sys
 import pandas as pd
 from contextlib import redirect_stdout
 import os
+import json
+import tempfile
 
 
 class CodeSnippetInput(BaseModel):
@@ -552,34 +554,273 @@ class SynapseBatchAnnotationTool(BaseTool):
         results = []
         failed = []
         
-        for annotation_spec in annotations:
-            try:
-                entity_id = annotation_spec['entity_id']
-                annotation_dict = annotation_spec['annotations']
-                
-                # Get the entity without downloading the file
-                entity = self.syn.get(entity_id, downloadFile=False)
-                
-                # Apply the annotations
-                entity.annotations = annotation_dict
-                
-                # Store the updated entity  
-                updated_entity = self.syn.store(entity, forceVersion=False)
-                
-                results.append(f"Applied annotations to '{updated_entity.name}' (ID: {updated_entity.id})")
-                
-            except Exception as e:
-                failed.append(f"Failed to annotate '{annotation_spec.get('entity_id', 'unknown')}': {e}")
+        # Process in batches to handle large numbers of files efficiently
+        batch_size = 25  # Process 25 files at a time to avoid parameter size limits
+        total_batches = (len(annotations) + batch_size - 1) // batch_size
+        
+        for batch_num in range(total_batches):
+            start_idx = batch_num * batch_size
+            end_idx = min(start_idx + batch_size, len(annotations))
+            batch_annotations = annotations[start_idx:end_idx]
+            
+            print(f"Processing batch {batch_num + 1}/{total_batches} ({len(batch_annotations)} files)...")
+            
+            for annotation_spec in batch_annotations:
+                try:
+                    entity_id = annotation_spec['entity_id']
+                    annotation_dict = annotation_spec['annotations']
+                    
+                    # Get the entity without downloading the file
+                    entity = self.syn.get(entity_id, downloadFile=False)
+                    
+                    # Apply the annotations
+                    entity.annotations = annotation_dict
+                    
+                    # Store the updated entity  
+                    updated_entity = self.syn.store(entity, forceVersion=False)
+                    
+                    results.append(f"Applied annotations to '{updated_entity.name}' (ID: {updated_entity.id})")
+                    
+                except Exception as e:
+                    failed.append(f"Failed to annotate '{annotation_spec.get('entity_id', 'unknown')}': {e}")
         
         summary = f"Successfully applied annotations to {len(results)} entities"
         if failed:
             summary += f", {len(failed)} failed"
         
-        summary += ":\n" + "\n".join(results)
+        # For large batches, provide a summary instead of listing all files
+        if len(results) > 20:
+            summary += f"\n\nProcessed {len(results)} files across {total_batches} batches."
+            if len(results) <= 50:  # Show first few and last few for medium lists
+                summary += "\n\nFirst few files:\n" + "\n".join(results[:10])
+                if len(results) > 10:
+                    summary += f"\n... and {len(results) - 10} more files"
+        else:
+            summary += ":\n" + "\n".join(results)
+            
         if failed:
             summary += "\n\nFailures:\n" + "\n".join(failed)
         
         return summary
+
+
+class LargeBatchAnnotationInput(BaseModel):
+    """Input for applying large batches of annotations from a file."""
+    annotation_file_path: str = Field(description="Path to JSON file containing annotations list")
+
+class SynapseLargeBatchAnnotationTool(BaseTool):
+    name: str = "apply_large_batch_annotations"
+    description: str = (
+        "Applies annotations to large numbers of Synapse entities by reading from a JSON file. "
+        "This tool is designed for processing hundreds of files efficiently without parameter size limits. "
+        "The JSON file should contain a list of annotation specifications with 'entity_id' and 'annotations' fields."
+    )
+    args_schema: Type[BaseModel] = LargeBatchAnnotationInput
+    syn: Optional[synapseclient.Synapse] = None
+
+    def __init__(self, syn: synapseclient.Synapse, **kwargs):
+        super().__init__(**kwargs)
+        self.syn = syn
+
+    def _run(self, annotation_file_path: str) -> str:
+        """
+        Applies annotations to multiple Synapse entities from a JSON file.
+        
+        Args:
+            annotation_file_path: Path to JSON file containing annotations
+            
+        Returns:
+            Status message with results or error details
+        """
+        if not self.syn:
+            return "Synapse client not initialized. Login failed."
+        
+        if not os.path.exists(annotation_file_path):
+            return f"Annotation file not found: {annotation_file_path}"
+        
+        try:
+            with open(annotation_file_path, 'r') as f:
+                annotations = json.load(f)
+        except Exception as e:
+            return f"Error reading annotation file: {e}"
+        
+        if not annotations:
+            return "No annotations found in file."
+        
+        results = []
+        failed = []
+        
+        # Process in batches to handle large numbers of files efficiently
+        batch_size = 25  # Process 25 files at a time
+        total_batches = (len(annotations) + batch_size - 1) // batch_size
+        
+        print(f"Starting large batch annotation process: {len(annotations)} files in {total_batches} batches")
+        
+        for batch_num in range(total_batches):
+            start_idx = batch_num * batch_size
+            end_idx = min(start_idx + batch_size, len(annotations))
+            batch_annotations = annotations[start_idx:end_idx]
+            
+            print(f"Processing batch {batch_num + 1}/{total_batches} ({len(batch_annotations)} files)...")
+            
+            batch_results = 0
+            for annotation_spec in batch_annotations:
+                try:
+                    entity_id = annotation_spec['entity_id']
+                    annotation_dict = annotation_spec['annotations']
+                    
+                    # Get the entity without downloading the file
+                    entity = self.syn.get(entity_id, downloadFile=False)
+                    
+                    # Apply the annotations
+                    entity.annotations = annotation_dict
+                    
+                    # Store the updated entity  
+                    updated_entity = self.syn.store(entity, forceVersion=False)
+                    
+                    results.append(f"Applied annotations to '{updated_entity.name}' (ID: {updated_entity.id})")
+                    batch_results += 1
+                    
+                except Exception as e:
+                    failed.append(f"Failed to annotate '{annotation_spec.get('entity_id', 'unknown')}': {e}")
+            
+            print(f"Batch {batch_num + 1} completed: {batch_results}/{len(batch_annotations)} successful")
+        
+        summary = f"Large batch annotation completed!\n"
+        summary += f"Successfully applied annotations to {len(results)} entities"
+        if failed:
+            summary += f", {len(failed)} failed"
+        
+        summary += f"\n\nProcessed {len(annotations)} total files across {total_batches} batches."
+        
+        # Show sample of successful annotations
+        if len(results) > 0:
+            summary += "\n\nSample of annotated files:\n" + "\n".join(results[:5])
+            if len(results) > 5:
+                summary += f"\n... and {len(results) - 5} more files"
+            
+        if failed:
+            summary += f"\n\nFailures ({len(failed)}):\n" + "\n".join(failed[:10])
+            if len(failed) > 10:
+                summary += f"\n... and {len(failed) - 10} more failures"
+        
+        return summary
+
+
+class FolderAnnotationInput(BaseModel):
+    """Input for annotating files in a single folder."""
+    folder_id: str = Field(description="Synapse ID of the folder to annotate")
+    annotations_dict: Dict[str, Any] = Field(description="Dictionary of annotations to apply to all files in the folder")
+
+class SynapseFolderAnnotationTool(BaseTool):
+    name: str = "annotate_folder"
+    description: str = (
+        "Applies the same set of annotations to all data files within a single Synapse folder. "
+        "This tool is designed for incremental processing where each folder represents a logical "
+        "group (e.g., all files from one SRR experiment). Only annotates actual data files, "
+        "skipping metadata and auxiliary files. The 'Filename' field is automatically added "
+        "to each file's annotations, but all other annotation decisions are made by the LLM."
+    )
+    args_schema: Type[BaseModel] = FolderAnnotationInput
+    syn: Optional[synapseclient.Synapse] = None
+
+    def __init__(self, syn: synapseclient.Synapse, **kwargs):
+        super().__init__(**kwargs)
+        self.syn = syn
+
+    def _run(self, folder_id: str, annotations_dict: Dict[str, Any]) -> str:
+        """
+        Applies annotations to all data files in a specific folder.
+        
+        Args:
+            folder_id: Synapse ID of the folder
+            annotations_dict: Annotations to apply to all files
+            
+        Returns:
+            Status message with results or error details
+        """
+        if not self.syn:
+            return "Synapse client not initialized. Login failed."
+        
+        if not annotations_dict:
+            return "No annotations provided."
+        
+        try:
+            # Get folder entity
+            folder_entity = self.syn.get(folder_id, downloadFile=False)
+            
+            # Get all files in the folder
+            children = list(self.syn.getChildren(folder_id, includeTypes=["file"]))
+            
+            if not children:
+                return f"No files found in folder {folder_entity.name} ({folder_id})"
+            
+            # Filter for data files (exclude metadata files)
+            data_files = []
+            for child in children:
+                child_name = child['name'].lower()
+                # Include common data file extensions, exclude metadata
+                if (child_name.endswith(('.fastq.gz', '.fastq', '.fq.gz', '.fq', '.bam', '.sam', 
+                                       '.cram', '.vcf.gz', '.vcf', '.bed', '.bedgraph', '.bigwig', 
+                                       '.bw', '.wig', '.txt', '.tsv', '.csv')) and 
+                    not any(metadata_term in child_name for metadata_term in 
+                           ['metadata', 'readme', 'manifest', 'summary', 'info', 'log'])):
+                    data_files.append(child)
+            
+            if not data_files:
+                return f"No data files found in folder {folder_entity.name} ({folder_id})"
+            
+            results = []
+            failed = []
+            
+            print(f"Annotating {len(data_files)} files in folder '{folder_entity.name}'...")
+            
+            for file_info in data_files:
+                try:
+                    file_id = file_info['id']
+                    file_name = file_info['name']
+                    
+                    # Get the file entity
+                    file_entity = self.syn.get(file_id, downloadFile=False)
+                    
+                    # Create a copy of annotations and add filename
+                    file_annotations = annotations_dict.copy()
+                    file_annotations['Filename'] = file_name
+                    
+                    # Apply the annotations
+                    file_entity.annotations = file_annotations
+                    
+                    # Store the updated entity
+                    updated_entity = self.syn.store(file_entity, forceVersion=False)
+                    
+                    results.append(f"✅ {file_name}")
+                    
+                except Exception as e:
+                    failed.append(f"❌ {file_info['name']}: {str(e)}")
+            
+            # Prepare summary
+            summary = f"Folder annotation completed for '{folder_entity.name}'"
+            summary += f"\nSuccessfully annotated: {len(results)} files"
+            
+            if failed:
+                summary += f"\nFailed: {len(failed)} files"
+            
+            # Show results
+            if len(results) <= 10:
+                summary += f"\n\nAnnotated files:\n" + "\n".join(results)
+            else:
+                summary += f"\n\nSample of annotated files:\n" + "\n".join(results[:5])
+                summary += f"\n... and {len(results) - 5} more files"
+            
+            if failed:
+                summary += f"\n\nFailures:\n" + "\n".join(failed[:5])
+                if len(failed) > 5:
+                    summary += f"\n... and {len(failed) - 5} more failures"
+            
+            return summary
+            
+        except Exception as e:
+            return f"Error processing folder {folder_id}: {str(e)}"
 
 
 def get_entity_children_recursively(syn: synapseclient.Synapse, synapse_id: str) -> pd.DataFrame:
